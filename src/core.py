@@ -25,7 +25,7 @@ LEGACY_CONFIG_DIR = Path.home() / ".config" / "udm"
 LEGACY_DATA_DIR = Path.home() / ".local" / "share" / "udm"
 DB_PATH = DATA_DIR / "downloads.db"
 SECRET_PATH = CONFIG_DIR / "rpc-secret"
-ARIA2_PORT = 16800
+ARIA2_PORT = 16801
 ARIA2_ENDPOINT = f"http://127.0.0.1:{ARIA2_PORT}/jsonrpc"
 
 CATEGORY_EXTENSIONS: dict[str, set[str]] = {

@@ -11,7 +11,7 @@ SECRET="$(cat "$SECRET_FILE")"
 exec /usr/bin/aria2c \
   --enable-rpc=true \
   --rpc-listen-all=false \
-  --rpc-listen-port=16800 \
+  --rpc-listen-port=16801 \
   --rpc-secret="$SECRET" \
   --continue=true \
   --file-allocation=none \
