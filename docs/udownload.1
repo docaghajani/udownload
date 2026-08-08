@@ -1,0 +1,48 @@
+.TH UDOWNLOAD 1 "August 2026" "UDownload 1.0.7" "User Commands"
+
+.SH NAME
+udownload \- GTK4 download manager powered by aria2
+
+.SH SYNOPSIS
+.B udownload
+.RI [ options ]
+
+.SH DESCRIPTION
+UDownload is a GTK4/libadwaita download manager powered by aria2.
+It supports segmented downloads, queues, scheduling, batch downloads,
+persistent settings, and browser integration.
+
+.SH OPTIONS
+.TP
+.BI \-\-add\-url " URL"
+Open UDownload and add URL to the download list.
+
+.TP
+.B \-\-browser\-integration
+Open the browser integration configuration.
+
+.TP
+.B \-\-self\-test
+Run the built-in UDownload self test.
+
+.SH FILES
+.TP
+.I ~/.config/udownload/
+Per-user configuration files.
+
+.TP
+.I ~/.local/share/udownload/
+Per-user UDownload data.
+
+.TP
+.I /usr/share/udownload/browser/
+Chrome, Chromium and Firefox browser integration files.
+
+.SH AUTHOR
+UDownload was written by AmirHossein Aghajani.
+
+.SH HOMEPAGE
+https://github.com/docaghajani/udownload
+
+.SH SEE ALSO
+.BR aria2c (1)

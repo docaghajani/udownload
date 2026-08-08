@@ -7,7 +7,7 @@ preferences, and Chrome/Chromium/Firefox integration through native messaging.
 ## Author
 
 AmirHossein Aghajani  
-https://amirhossein.dev  
+https://github.com/docaghajani/udownload  
 aghajani@dr.com
 
 ## License
