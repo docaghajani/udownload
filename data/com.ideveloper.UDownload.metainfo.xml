@@ -1,15 +1,36 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
   <id>com.ideveloper.UDownload</id>
-  <name>Ubuntu Download Manager</name>
-  <summary>Segmented downloads, queues, scheduling and browser integration</summary>
+
+  <name>UDownload</name>
+  <summary>Fast GTK4 download manager with browser integration</summary>
+
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="com.ideveloper">
+    <name>AmirHossein Aghajani</name>
+  </developer>
+
   <description>
-    <p>A native Ubuntu download manager powered by aria2. It supports multiple connections, pause and resume, categories, queues, scheduled downloads, batch link selection, and Chrome/Firefox integration through native messaging.</p>
+    <p>
+      UDownload is a native GTK4/libadwaita download manager powered by aria2.
+      It supports segmented downloads, pause and resume, queues, scheduling,
+      batch link selection and browser integration.
+    </p>
   </description>
+
   <url type="homepage">https://amirhossein.dev</url>
+
   <launchable type="desktop-id">udownload.desktop</launchable>
-  <provides><binary>udownload</binary></provides>
-  <releases><release version="1.0.7" date="2026-08-08"/></releases>
+
+  <provides>
+    <binary>udownload</binary>
+  </provides>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="1.0.7" date="2026-08-08"/>
+  </releases>
 </component>
