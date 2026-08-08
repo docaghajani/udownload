@@ -13,3 +13,11 @@ aghajani@dr.com
 ## License
 
 GNU General Public License version 3 or later (GPL-3.0-or-later).
+
+## Browser Integration
+
+Chrome, Chromium and Firefox integration is included.
+
+Installation instructions:
+
+docs/BROWSER_INTEGRATION.md
