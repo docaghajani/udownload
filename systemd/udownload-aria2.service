@@ -1,0 +1,13 @@
+[Unit]
+Description=Ubuntu Download Manager aria2 engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/udownload/aria2-wrapper
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/udownload"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/udownload"
+mkdir -p "$CONFIG_DIR" "$DATA_DIR"
+SECRET_FILE="$CONFIG_DIR/rpc-secret"
+SESSION_FILE="$DATA_DIR/aria2.session"
+[ -f "$SECRET_FILE" ] || (umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n' > "$SECRET_FILE")
+touch "$SESSION_FILE"
+SECRET="$(cat "$SECRET_FILE")"
+exec /usr/bin/aria2c \
+  --enable-rpc=true \
+  --rpc-listen-all=false \
+  --rpc-listen-port=16800 \
+  --rpc-secret="$SECRET" \
+  --continue=true \
+  --file-allocation=none \
+  --max-concurrent-downloads=5 \
+  --max-connection-per-server=16 \
+  --split=16 \
+  --min-split-size=1M \
+  --check-certificate=true \
+  --auto-file-renaming=true \
+  --save-session="$SESSION_FILE" \
+  --save-session-interval=30 \
+  --input-file="$SESSION_FILE" \
+  --console-log-level=warn \
+  --summary-interval=0

@@ -1,0 +1,21 @@
+[Desktop Entry]
+Name=Ubuntu Download Manager
+GenericName=Download Manager
+Comment=Fast segmented downloads, queues, scheduling and browser integration
+Exec=udownload %U
+Icon=udownload
+Terminal=false
+Type=Application
+Categories=Network;FileTransfer;
+Keywords=download;manager;aria2;IDM;browser;
+StartupNotify=true
+StartupWMClass=com.ideveloper.UDownload
+Actions=AddURL;BrowserIntegration;
+
+[Desktop Action AddURL]
+Name=Add download URL
+Exec=udownload
+
+[Desktop Action BrowserIntegration]
+Name=Browser integration
+Exec=udownload --browser-integration
