@@ -6,7 +6,9 @@ import base64
 import contextlib
 import datetime as dt
 import json
+import mimetypes
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -775,6 +777,88 @@ class BrowserIntegrationDialog(Gtk.Dialog):
         self.connect("response", lambda *_: self.destroy())
 
 
+class DownloadPropertiesDialog(Gtk.Dialog):
+    def __init__(self, parent: "MainWindow", item: DownloadObject, row: Any):
+        super().__init__(title="File Properties", transient_for=parent, modal=True)
+        self.parent_window = parent
+        self.item = item
+        self.row = row
+        self.set_default_size(760, 560)
+        self.add_button("OK", Gtk.ResponseType.CLOSE)
+        self.set_default_response(Gtk.ResponseType.CLOSE)
+
+        area = self.get_content_area()
+        area.set_spacing(12)
+        area.set_margin_top(16)
+        area.set_margin_bottom(16)
+        area.set_margin_start(16)
+        area.set_margin_end(16)
+
+        title_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        icon.set_pixel_size(40)
+        title_row.append(icon)
+        title_label = Gtk.Label(label=item.file_name, xalign=0, hexpand=True)
+        title_label.add_css_class("title-3")
+        title_label.set_ellipsize(3)
+        title_row.append(title_label)
+        area.append(title_row)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=9)
+        area.append(grid)
+
+        path = Path(item.save_dir) / item.file_name
+        mime_type, _encoding = mimetypes.guess_type(item.file_name)
+        mime_text = mime_type or item.category or "Unknown"
+        size_text = format_bytes(item.total) if item.total else "Unknown"
+        if item.total:
+            size_text += f" ({item.total} bytes)"
+
+        values = [
+            ("Type", mime_text),
+            ("Status", item.status_text),
+            ("Size", size_text),
+            ("Progress", item.progress_text or "—"),
+            ("Time left", item.eta_text or "—"),
+            ("Transfer rate", item.speed_text or "—"),
+            ("Save to", str(path)),
+            ("Address", item.url),
+            ("Description", item.description or ""),
+            ("Source page / Referrer", str(row["source_page"] or "")),
+            ("Date added", item.added_at_text),
+            ("Queue", item.queue_name),
+        ]
+        if item.error_message:
+            values.append(("Error", item.error_message))
+
+        for index, (label_text, value) in enumerate(values):
+            label = Gtk.Label(label=label_text, xalign=1)
+            label.set_valign(Gtk.Align.CENTER)
+            entry = Gtk.Entry(hexpand=True)
+            entry.set_text(str(value or ""))
+            entry.set_editable(False)
+            entry.set_can_focus(True)
+            grid.attach(label, 0, index, 1, 1)
+            grid.attach(entry, 1, index, 1, 1)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        actions.set_halign(Gtk.Align.END)
+        open_button = Gtk.Button(label="Open")
+        open_button.set_sensitive(path.exists())
+        open_button.connect("clicked", lambda *_: parent._open_item(item))
+        folder_button = Gtk.Button(label="Open Folder")
+        folder_button.connect("clicked", lambda *_: parent._open_item_folder(item))
+        move_button = Gtk.Button(label="Move / Rename…")
+        move_button.set_sensitive(item.status == "complete" and path.exists())
+        move_button.connect("clicked", lambda *_: parent._move_rename_item(item, self))
+        actions.append(open_button)
+        actions.append(folder_button)
+        actions.append(move_button)
+        area.append(actions)
+
+        self.connect("response", lambda *_: self.destroy())
+
+
 class MainWindow(Gtk.ApplicationWindow):
     def __init__(self, app: Gtk.Application):
         super().__init__(application=app, title=APP_NAME)
@@ -1003,7 +1087,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.9",
+            version="1.0.10",
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -1013,13 +1097,16 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         about.present()
 
-    @staticmethod
-    def _column_setup(_factory, list_item: Gtk.ListItem) -> None:
+    def _column_setup(self, _factory, list_item: Gtk.ListItem) -> None:
         label = Gtk.Label(xalign=0, ellipsize=3)
         label.set_margin_start(6)
         label.set_margin_end(6)
         label.set_margin_top(7)
         label.set_margin_bottom(7)
+        right_click = Gtk.GestureClick()
+        right_click.set_button(3)
+        right_click.connect("pressed", self._on_row_right_click, list_item)
+        label.add_controller(right_click)
         list_item.set_child(label)
 
     @staticmethod
@@ -1148,10 +1235,234 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _activate_row(self, _view, position: int) -> None:
         item = self.sort_model.get_item(position)
-        if item and item.status == "complete":
-            path = Path(item.save_dir) / item.file_name
-            target = str(path if path.exists() else Path(item.save_dir))
-            subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if isinstance(item, DownloadObject):
+            self.show_properties(item)
+
+    @staticmethod
+    def _path_for_item(item: DownloadObject) -> Path:
+        return Path(item.save_dir).expanduser() / item.file_name
+
+    def _open_item(self, item: DownloadObject) -> None:
+        path = self._path_for_item(item)
+        if not path.exists():
+            self.status_label.set_text(f"File not found: {path}")
+            return
+        subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _open_item_folder(self, item: DownloadObject) -> None:
+        directory = Path(item.save_dir).expanduser()
+        if not directory.exists():
+            self.status_label.set_text(f"Folder not found: {directory}")
+            return
+        subprocess.Popen(["xdg-open", str(directory)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def _open_with_item(self, item: DownloadObject) -> None:
+        path = self._path_for_item(item)
+        if not path.exists():
+            self.status_label.set_text(f"File not found: {path}")
+            return
+        content_type, _uncertain = Gio.content_type_guess(str(path), None)
+        apps = [app for app in Gio.AppInfo.get_all_for_type(content_type) if app.should_show()]
+        if not apps:
+            self.status_label.set_text("No application is registered for this file type")
+            return
+
+        dialog = Gtk.Dialog(title="Open With", transient_for=self, modal=True)
+        dialog.set_default_size(460, 420)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        area = dialog.get_content_area()
+        area.set_spacing(8)
+        area.set_margin_top(14)
+        area.set_margin_bottom(14)
+        area.set_margin_start(14)
+        area.set_margin_end(14)
+        area.append(Gtk.Label(label=f"Open {item.file_name} with:", xalign=0))
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        scroll.set_child(apps_box)
+        area.append(scroll)
+        file = Gio.File.new_for_path(str(path))
+
+        for app in apps:
+            button = Gtk.Button(label=app.get_display_name())
+            button.set_halign(Gtk.Align.FILL)
+            def launch(_button, chosen=app) -> None:
+                try:
+                    chosen.launch([file], None)
+                    dialog.destroy()
+                except Exception as exc:
+                    self.status_label.set_text(f"Could not open file: {exc}")
+            button.connect("clicked", launch)
+            apps_box.append(button)
+
+        dialog.connect("response", lambda *_: dialog.destroy())
+        dialog.present()
+
+    def _move_rename_item(self, item: DownloadObject, properties_dialog=None) -> None:
+        source = self._path_for_item(item)
+        if item.status != "complete" or not source.exists():
+            self.status_label.set_text("Move / Rename is available for completed files")
+            return
+
+        chooser = Gtk.FileChooserDialog(
+            title="Move / Rename",
+            transient_for=self,
+            modal=True,
+            action=Gtk.FileChooserAction.SAVE,
+        )
+        chooser.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        chooser.add_button("Move", Gtk.ResponseType.ACCEPT)
+        chooser.set_default_response(Gtk.ResponseType.ACCEPT)
+        chooser.set_current_name(item.file_name)
+        with contextlib.suppress(Exception):
+            chooser.set_current_folder(Gio.File.new_for_path(str(source.parent)))
+
+        def on_response(dialog, response: int) -> None:
+            if response == Gtk.ResponseType.ACCEPT:
+                file = dialog.get_file()
+                target_path = file.get_path() if file else None
+                if target_path:
+                    target = Path(target_path).expanduser()
+                    if target != source:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if target.exists():
+                            target = unique_path(target.parent, target.name)
+                        try:
+                            shutil.move(str(source), str(target))
+                            self.db.conn.execute(
+                                "UPDATE downloads SET file_name=?,save_dir=?,file_name_locked=1 WHERE id=?",
+                                (target.name, str(target.parent), item.db_id),
+                            )
+                            self.db.conn.commit()
+                            self.load_rows()
+                            self.status_label.set_text(f"Moved to: {target}")
+                            if properties_dialog is not None:
+                                properties_dialog.destroy()
+                        except Exception as exc:
+                            self.status_label.set_text(f"Could not move file: {exc}")
+            dialog.destroy()
+
+        chooser.connect("response", on_response)
+        chooser.present()
+
+    def _redownload_item(self, item: DownloadObject) -> None:
+        row = self.db.get(item.db_id)
+        if row is None:
+            return
+        headers: dict[str, str] = {}
+        with contextlib.suppress(Exception):
+            headers = json.loads(row["headers_json"] or "{}")
+        self.add_url_dialog({
+            "url": item.url,
+            "filename": item.file_name,
+            "save_dir": item.save_dir,
+            "category": item.category,
+            "description": item.description,
+            "headers": headers,
+            "source_page": row["source_page"] or "",
+        })
+
+    def _resume_item(self, item: DownloadObject) -> None:
+        self._select_db_id(item.db_id)
+        self.resume_selected()
+
+    def _pause_item(self, item: DownloadObject) -> None:
+        if item.gid:
+            with contextlib.suppress(Exception):
+                self.aria.pause(item.gid)
+        self.refresh()
+
+    def _remove_item(self, item: DownloadObject) -> None:
+        self._select_db_id(item.db_id)
+        self.delete_selected()
+
+    def _add_item_to_main_queue(self, item: DownloadObject) -> None:
+        self.db.conn.execute(
+            "UPDATE downloads SET queue_name='Main download queue' WHERE id=?",
+            (item.db_id,),
+        )
+        self.db.conn.commit()
+        self.load_rows()
+        self.status_label.set_text(f"Added to Main download queue: {item.file_name}")
+
+    def show_properties(self, item: DownloadObject | None = None) -> None:
+        item = item or self._selected()
+        if not item:
+            return
+        row = self.db.get(item.db_id)
+        if row is None:
+            return
+        DownloadPropertiesDialog(self, item, row).present()
+
+    def _context_button(self, label: str, callback, sensitive: bool = True) -> Gtk.Button:
+        button = Gtk.Button(label=label)
+        button.set_has_frame(False)
+        button.set_halign(Gtk.Align.FILL)
+        button.set_sensitive(sensitive)
+        button.connect("clicked", callback)
+        return button
+
+    def _on_row_right_click(self, gesture, _n_press: int, x: float, y: float, list_item: Gtk.ListItem) -> None:
+        item = list_item.get_item()
+        if not isinstance(item, DownloadObject):
+            return
+        position = list_item.get_position()
+        if position >= 0:
+            self.selection.set_selected(position)
+
+        path = self._path_for_item(item)
+        file_exists = path.exists()
+        is_active = item.status == "active"
+        can_resume = item.status in {"paused", "waiting"}
+        can_move = item.status == "complete" and file_exists
+
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+        menu_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+        menu_box.set_margin_top(5)
+        menu_box.set_margin_bottom(5)
+        menu_box.set_margin_start(5)
+        menu_box.set_margin_end(5)
+
+        def add(label: str, action, sensitive: bool = True) -> None:
+            def run(_button) -> None:
+                popover.popdown()
+                action()
+            menu_box.append(self._context_button(label, run, sensitive))
+
+        def separator() -> None:
+            menu_box.append(Gtk.Separator())
+
+        add("Open", lambda: self._open_item(item), file_exists)
+        add("Open with…", lambda: self._open_with_item(item), file_exists)
+        add("Open Folder", lambda: self._open_item_folder(item), Path(item.save_dir).exists())
+        add("Move / Rename…", lambda: self._move_rename_item(item), can_move)
+        add("Redownload…", lambda: self._redownload_item(item))
+        separator()
+        add("Resume Download", lambda: self._resume_item(item), can_resume)
+        add("Stop Download", lambda: self._pause_item(item), is_active)
+        separator()
+        add("Add to Main download queue", lambda: self._add_item_to_main_queue(item))
+        add("Remove", lambda: self._remove_item(item))
+        separator()
+        add("Properties", lambda: self.show_properties(item))
+
+        popover.set_child(menu_box)
+        widget = gesture.get_widget()
+        popover.set_parent(widget)
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+        popover.set_pointing_to(rect)
+
+        def cleanup(_popover) -> None:
+            with contextlib.suppress(Exception):
+                _popover.unparent()
+
+        popover.connect("closed", cleanup)
+        popover.popup()
 
     def _on_download_scroll(self, _adjustment) -> None:
         # While the user is actively scrolling, do not mutate the visible
