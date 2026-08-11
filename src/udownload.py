@@ -172,7 +172,8 @@ class DownloadObject(GObject.Object):
 class AddDownloadDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window, initial: dict[str, Any], on_accept):
         super().__init__(title="Download File Info", transient_for=parent, modal=True)
-        self.set_default_size(620, 390)
+        self.set_default_size(760, 410)
+        self.parent_window = parent
         self.on_accept = on_accept
         self.cancel_button = self.add_button("Cancel", Gtk.ResponseType.CANCEL)
         self.later_button = self.add_button("Download Later", Gtk.ResponseType.APPLY)
@@ -199,8 +200,25 @@ class AddDownloadDialog(Gtk.Dialog):
         area.set_margin_start(16)
         area.set_margin_end(16)
 
-        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
-        area.append(grid)
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        area.append(body)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10, hexpand=True)
+        body.append(grid)
+
+        preview = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        preview.set_size_request(125, -1)
+        preview.set_halign(Gtk.Align.CENTER)
+        preview.set_valign(Gtk.Align.CENTER)
+        self.file_info_icon = Gtk.Image.new_from_icon_name("text-x-generic-symbolic")
+        self.file_info_icon.set_pixel_size(64)
+        self.file_info_size = Gtk.Label(label="—", xalign=0.5)
+        self.file_info_name = Gtk.Label(label="", xalign=0.5, wrap=True)
+        self.file_info_name.set_max_width_chars(18)
+        preview.append(self.file_info_icon)
+        preview.append(self.file_info_size)
+        preview.append(self.file_info_name)
+        body.append(preview)
 
         self.url_entry = Gtk.Entry(hexpand=True)
         self.url_entry.set_text(initial.get("url", ""))
@@ -219,13 +237,19 @@ class AddDownloadDialog(Gtk.Dialog):
         self.dir_browse = Gtk.Button(label="Browse…")
         self.dir_browse.connect("clicked", lambda *_: choose_folder(self, self.dir_entry))
         self.dir_box.append(self.dir_browse)
-        self.category_combo = Gtk.DropDown.new_from_strings(
-            ["General", "Compressed", "Documents", "Music", "Programs", "Video", "Images"]
-        )
+        self.categories = [
+            "General", "Compressed", "Documents", "Music",
+            "Programs", "Video", "Images",
+        ]
+        self.category_combo = Gtk.DropDown.new_from_strings(self.categories)
         detected = initial.get("category") or category_for_filename(filename)
-        categories = ["General", "Compressed", "Documents", "Music", "Programs", "Video", "Images"]
         with contextlib.suppress(ValueError):
-            self.category_combo.set_selected(categories.index(detected))
+            self.category_combo.set_selected(self.categories.index(detected))
+
+        self.remember_category_path = Gtk.CheckButton()
+        self.remember_category_path.set_active(True)
+        self.category_combo.connect("notify::selected", self._on_category_changed)
+
         self.description_entry = Gtk.Entry(hexpand=True)
         self.description_entry.set_text(initial.get("description", ""))
 
@@ -280,12 +304,12 @@ class AddDownloadDialog(Gtk.Dialog):
                 self._sync_schedule_controls(self.schedule_time)
                 self._update_schedule_label()
 
-        labels = ["URL", "Save as", "Folder", "Category", "Description", "Schedule"]
+        labels = ["URL", "Category", "Save as", "Folder", "Description", "Schedule"]
         widgets = [
             self.url_entry,
+            self.category_combo,
             self.file_entry,
             self.dir_box,
-            self.category_combo,
             self.description_entry,
             self.schedule_button,
         ]
@@ -294,13 +318,16 @@ class AddDownloadDialog(Gtk.Dialog):
             grid.attach(lab, 0, idx, 1, 1)
             grid.attach(widget, 1, idx, 1, 1)
 
+        self._update_remember_path_label()
+        grid.attach(self.remember_category_path, 1, len(labels), 1, 1)
+
         note = Gtk.Label(
             label="Authenticated downloads can receive the current page referrer and cookies from the browser extension.",
             wrap=True,
             xalign=0,
         )
         note.add_css_class("dim-label")
-        grid.attach(note, 1, len(labels), 1, 1)
+        grid.attach(note, 1, len(labels) + 1, 1, 1)
 
         self.resolve_label = Gtk.Label(
             label="",
@@ -308,14 +335,61 @@ class AddDownloadDialog(Gtk.Dialog):
             xalign=0,
         )
         self.resolve_label.add_css_class("dim-label")
-        grid.attach(self.resolve_label, 1, len(labels) + 1, 1, 1)
+        grid.attach(self.resolve_label, 1, len(labels) + 2, 1, 1)
 
         self.connect("response", self._on_response)
+        self._update_file_info_panel(filename, 0)
+        self._load_remembered_category_path()
         self._refresh_unique_filename()
         if self.url_entry.get_text().strip():
             self._schedule_resolve(delay_ms=50)
         else:
             self._prefill_url_from_clipboard()
+
+    def _category_name(self) -> str:
+        index = int(self.category_combo.get_selected())
+        if 0 <= index < len(self.categories):
+            return self.categories[index]
+        return "General"
+
+    def _category_dir_key(self, category: str | None = None) -> str:
+        return f"download.category_dir::{category or self._category_name()}"
+
+    def _update_remember_path_label(self) -> None:
+        self.remember_category_path.set_label(
+            f"Remember this path for {self._category_name()} category"
+        )
+
+    def _load_remembered_category_path(self) -> None:
+        remembered = str(
+            self.parent_window.settings.get(self._category_dir_key(), "") or ""
+        ).strip()
+        if remembered:
+            self.dir_entry.set_text(remembered)
+
+    def _on_category_changed(self, *_args) -> None:
+        self._update_remember_path_label()
+        if self.remember_category_path.get_active():
+            self._load_remembered_category_path()
+
+    def _update_file_info_panel(self, filename: str, total_length: int) -> None:
+        category = category_for_filename(filename or "")
+        icon_names = {
+            "Compressed": "package-x-generic-symbolic",
+            "Documents": "x-office-document-symbolic",
+            "Music": "audio-x-generic-symbolic",
+            "Programs": "application-x-executable-symbolic",
+            "Video": "video-x-generic-symbolic",
+            "Images": "image-x-generic-symbolic",
+            "General": "text-x-generic-symbolic",
+        }
+        self.file_info_icon.set_from_icon_name(
+            icon_names.get(category, "text-x-generic-symbolic")
+        )
+        self.file_info_size.set_text(
+            format_bytes(total_length) if total_length > 0 else "Resolving…"
+        )
+        self.file_info_name.set_text(filename or "")
 
     def _prefill_url_from_clipboard(self) -> None:
         display = Gdk.Display.get_default()
@@ -434,13 +508,14 @@ class AddDownloadDialog(Gtk.Dialog):
             self._filename_base = info.filename
             self._resolved_filename_confident = bool(info.filename_confident)
             self._refresh_unique_filename()
-            categories = [
-                "General", "Compressed", "Documents", "Music",
-                "Programs", "Video", "Images",
-            ]
             detected = category_for_filename(info.filename)
             with contextlib.suppress(ValueError):
-                self.category_combo.set_selected(categories.index(detected))
+                self.category_combo.set_selected(self.categories.index(detected))
+
+        self._update_file_info_panel(
+            self.file_entry.get_text().strip() or info.filename,
+            int(info.total_length or 0),
+        )
 
         details: list[str] = []
         if info.total_length:
@@ -515,12 +590,17 @@ class AddDownloadDialog(Gtk.Dialog):
         if not url or not filename or not directory:
             return
         filename = self._unique_filename_for(directory, filename)
-        categories = ["General", "Compressed", "Documents", "Music", "Programs", "Video", "Images"]
-        category = categories[self.category_combo.get_selected()]
+        category = self.categories[self.category_combo.get_selected()]
+        if self.remember_category_path.get_active():
+            self.parent_window.settings.set(
+                self._category_dir_key(category),
+                directory,
+            )
+
         start_time = None
-        if response == Gtk.ResponseType.APPLY:
-            chosen = self.schedule_time or self._default_schedule_time()
-            start_time = chosen.isoformat(timespec="seconds")
+        if response == Gtk.ResponseType.APPLY and self.schedule_time is not None:
+            start_time = self.schedule_time.isoformat(timespec="seconds")
+
         payload = {
             "url": url,
             "filename": filename,
@@ -775,6 +855,238 @@ class BrowserIntegrationDialog(Gtk.Dialog):
         buttons.append(folder)
         area.append(buttons)
         self.connect("response", lambda *_: self.destroy())
+
+
+class DownloadProgressDialog(Gtk.Dialog):
+    def __init__(self, parent: "MainWindow", download_id: int):
+        row = parent.db.get(download_id)
+        title = str(row["file_name"]) if row else "Download"
+        super().__init__(
+            title=f"Downloading - {title}",
+            transient_for=parent,
+            modal=False,
+        )
+        self.parent_window = parent
+        self.download_id = int(download_id)
+        self._source_id = 0
+        self._completion_handled = False
+        self.set_default_size(620, 430)
+
+        self.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.connect("response", lambda *_: self.destroy())
+        self.connect("destroy", self._on_destroy)
+
+        area = self.get_content_area()
+        area.set_spacing(10)
+        area.set_margin_top(12)
+        area.set_margin_bottom(12)
+        area.set_margin_start(12)
+        area.set_margin_end(12)
+
+        self.notebook = Gtk.Notebook()
+        area.append(self.notebook)
+
+        status_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        status_tab.set_margin_top(10)
+        status_tab.set_margin_bottom(10)
+        status_tab.set_margin_start(10)
+        status_tab.set_margin_end(10)
+
+        self.status_grid = Gtk.Grid(column_spacing=12, row_spacing=7)
+        status_tab.append(self.status_grid)
+
+        self.value_labels: dict[str, Gtk.Label] = {}
+        fields = [
+            ("URL", "url"),
+            ("Status", "status"),
+            ("File size", "size"),
+            ("Downloaded", "downloaded"),
+            ("Transfer rate", "speed"),
+            ("Time left", "eta"),
+            ("Resume capability", "resume"),
+        ]
+        for index, (caption, key) in enumerate(fields):
+            left = Gtk.Label(label=caption, xalign=0)
+            left.add_css_class("dim-label")
+            right = Gtk.Label(label="", xalign=0, hexpand=True, selectable=True)
+            right.set_ellipsize(3)
+            self.status_grid.attach(left, 0, index, 1, 1)
+            self.status_grid.attach(right, 1, index, 1, 1)
+            self.value_labels[key] = right
+
+        self.progress = Gtk.ProgressBar(show_text=True)
+        status_tab.append(self.progress)
+
+        status_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.details_button = Gtk.Button(label="Show details")
+        self.pause_button = Gtk.Button(label="Pause")
+        self.cancel_button = Gtk.Button(label="Cancel")
+        self.details_button.connect("clicked", self._show_details)
+        self.pause_button.connect("clicked", self._pause_or_resume)
+        self.cancel_button.connect("clicked", self._cancel_download)
+        status_actions.append(self.details_button)
+        status_actions.append(Gtk.Box(hexpand=True))
+        status_actions.append(self.pause_button)
+        status_actions.append(self.cancel_button)
+        status_tab.append(status_actions)
+
+        self.notebook.append_page(status_tab, Gtk.Label(label="Download status"))
+
+        limiter_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        limiter_tab.set_margin_top(16)
+        limiter_tab.set_margin_bottom(16)
+        limiter_tab.set_margin_start(16)
+        limiter_tab.set_margin_end(16)
+        self.limit_enabled = Gtk.CheckButton(
+            label="Limit transfer rate for this download"
+        )
+        limiter_tab.append(self.limit_enabled)
+        limiter_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        limiter_row.append(Gtk.Label(label="Limit"))
+        self.limit_kib = Gtk.SpinButton.new_with_range(1, 1024 * 1024, 1)
+        self.limit_kib.set_value(1024)
+        limiter_row.append(self.limit_kib)
+        limiter_row.append(Gtk.Label(label="KiB/s"))
+        limiter_tab.append(limiter_row)
+        apply_limit = Gtk.Button(label="Apply speed limit")
+        apply_limit.set_halign(Gtk.Align.START)
+        apply_limit.connect("clicked", self._apply_speed_limit)
+        limiter_tab.append(apply_limit)
+        self.notebook.append_page(limiter_tab, Gtk.Label(label="Speed limiter"))
+
+        completion_tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        completion_tab.set_margin_top(16)
+        completion_tab.set_margin_bottom(16)
+        completion_tab.set_margin_start(16)
+        completion_tab.set_margin_end(16)
+        self.open_file_done = Gtk.CheckButton(label="Open file when done")
+        self.open_folder_done = Gtk.CheckButton(label="Open folder when done")
+        self.close_window_done = Gtk.CheckButton(
+            label="Close this progress window when done"
+        )
+        completion_tab.append(self.open_file_done)
+        completion_tab.append(self.open_folder_done)
+        completion_tab.append(self.close_window_done)
+        self.notebook.append_page(
+            completion_tab,
+            Gtk.Label(label="Options on completion"),
+        )
+
+        self._refresh()
+        self._source_id = GLib.timeout_add(750, self._refresh)
+
+    def _row_and_item(self):
+        row = self.parent_window.db.get(self.download_id)
+        if row is None:
+            return None, None
+        return row, DownloadObject(row)
+
+    def _refresh(self) -> bool:
+        row, item = self._row_and_item()
+        if row is None or item is None:
+            self.destroy()
+            return GLib.SOURCE_REMOVE
+
+        self.set_title(f"{item.progress_text or '0.0%'} {item.file_name}")
+        self.value_labels["url"].set_text(item.url)
+        self.value_labels["status"].set_text(item.status_text)
+        self.value_labels["size"].set_text(item.size_text or "Unknown")
+        self.value_labels["downloaded"].set_text(
+            f"{format_bytes(item.completed)}"
+            + (f"  ({item.progress_text})" if item.progress_text else "")
+        )
+        self.value_labels["speed"].set_text(item.speed_text or "0 B/s")
+        self.value_labels["eta"].set_text(item.eta_text or "Calculating…")
+        self.value_labels["resume"].set_text(
+            "Yes" if item.status in {"active", "paused", "waiting"} else "—"
+        )
+
+        fraction = 0.0
+        if item.total > 0:
+            fraction = min(1.0, max(0.0, item.completed / item.total))
+        elif item.status == "complete":
+            fraction = 1.0
+        self.progress.set_fraction(fraction)
+        self.progress.set_text(item.progress_text or "Resolving…")
+
+        if item.status == "active":
+            self.pause_button.set_label("Pause")
+            self.pause_button.set_sensitive(True)
+        elif item.status in {"paused", "waiting"}:
+            self.pause_button.set_label("Resume")
+            self.pause_button.set_sensitive(True)
+        elif item.status == "complete":
+            self.pause_button.set_label("Open")
+            self.pause_button.set_sensitive(True)
+            self.cancel_button.set_label("Close")
+            self._handle_completion(item)
+        else:
+            self.pause_button.set_sensitive(False)
+
+        return GLib.SOURCE_CONTINUE
+
+    def _pause_or_resume(self, *_args) -> None:
+        _row, item = self._row_and_item()
+        if item is None:
+            return
+        if item.status == "complete":
+            self.parent_window._open_item(item)
+            return
+        if item.status == "active":
+            self.parent_window._pause_item(item)
+        else:
+            self.parent_window._resume_item(item)
+        self._refresh()
+
+    def _cancel_download(self, *_args) -> None:
+        _row, item = self._row_and_item()
+        if item is not None and item.status in {"active", "waiting"}:
+            self.parent_window._pause_item(item)
+        self.destroy()
+
+    def _show_details(self, *_args) -> None:
+        _row, item = self._row_and_item()
+        if item is not None:
+            self.parent_window.show_properties(item)
+
+    def _apply_speed_limit(self, *_args) -> None:
+        _row, item = self._row_and_item()
+        if item is None or not item.gid:
+            return
+        value = (
+            f"{self.limit_kib.get_value_as_int()}K"
+            if self.limit_enabled.get_active()
+            else "0"
+        )
+        try:
+            self.parent_window.aria.call(
+                "changeOption",
+                [item.gid, {"max-download-limit": value}],
+            )
+            self.parent_window.status_label.set_text(
+                f"Per-download speed limit updated for {item.file_name}"
+            )
+        except Exception as exc:
+            self.parent_window.status_label.set_text(
+                f"Could not change speed limit: {exc}"
+            )
+
+    def _handle_completion(self, item: DownloadObject) -> None:
+        if self._completion_handled:
+            return
+        self._completion_handled = True
+        if self.open_file_done.get_active():
+            self.parent_window._open_item(item)
+        if self.open_folder_done.get_active():
+            self.parent_window._open_item_folder(item)
+        if self.close_window_done.get_active():
+            GLib.idle_add(lambda: (self.destroy(), GLib.SOURCE_REMOVE)[1])
+
+    def _on_destroy(self, *_args) -> None:
+        if self._source_id:
+            with contextlib.suppress(Exception):
+                GLib.source_remove(self._source_id)
+            self._source_id = 0
 
 
 class SchedulerDialog(Gtk.Dialog):
@@ -1605,7 +1917,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.11",
+            version="1.0.12",
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -1616,23 +1928,37 @@ class MainWindow(Gtk.ApplicationWindow):
         about.present()
 
     def _column_setup(self, _factory, list_item: Gtk.ListItem) -> None:
-        label = Gtk.Label(xalign=0, ellipsize=3)
+        cell = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        cell.set_hexpand(True)
+        cell.set_vexpand(True)
+        cell.set_halign(Gtk.Align.FILL)
+        cell.set_valign(Gtk.Align.FILL)
+
+        label = Gtk.Label(xalign=0, ellipsize=3, hexpand=True)
+        label.set_halign(Gtk.Align.FILL)
+        label.set_valign(Gtk.Align.CENTER)
         label.set_margin_start(6)
         label.set_margin_end(6)
         label.set_margin_top(7)
         label.set_margin_bottom(7)
+        cell.append(label)
+
         right_click = Gtk.GestureClick()
         right_click.set_button(3)
         right_click.connect("pressed", self._on_row_right_click, list_item)
-        label.add_controller(right_click)
-        list_item.set_child(label)
+        cell.add_controller(right_click)
+        list_item.set_child(cell)
 
     @staticmethod
     def _column_bind(_factory, list_item: Gtk.ListItem, getter) -> None:
         item = list_item.get_item()
-        label = list_item.get_child()
-        label.set_text(str(getter(item) or ""))
-        label.set_tooltip_text(str(getter(item) or ""))
+        cell = list_item.get_child()
+        label = cell.get_first_child() if cell is not None else None
+        if not isinstance(label, Gtk.Label):
+            return
+        value = str(getter(item) or "")
+        label.set_text(value)
+        label.set_tooltip_text(value)
 
     @staticmethod
     def _compare(left: Any, right: Any) -> Gtk.Ordering:
@@ -2096,7 +2422,18 @@ class MainWindow(Gtk.ApplicationWindow):
         )
         if data.get("start_now") and not data.get("start_time"):
             self._start_db_download(download_id)
+            GLib.timeout_add(
+                200,
+                self._show_download_progress_after_start,
+                download_id,
+            )
         self.load_rows()
+
+    def _show_download_progress_after_start(self, download_id: int) -> bool:
+        row = self.db.get(download_id)
+        if row is not None:
+            DownloadProgressDialog(self, download_id).present()
+        return GLib.SOURCE_REMOVE
 
     def _start_db_download(self, download_id: int) -> None:
         row = self.db.get(download_id)

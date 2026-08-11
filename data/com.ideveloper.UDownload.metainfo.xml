@@ -31,6 +31,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.12" date="2026-08-11">
+      <description>
+        <p>Add an IDM-style download info/progress workflow and make row context menus work across the full row area.</p>
+      </description>
+    </release>
     <release version="1.0.11" date="2026-08-11">
       <description>
         <p>Add an IDM-style queue scheduler with schedule controls, queue files, retries and completion actions.</p>
