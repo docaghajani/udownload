@@ -10,6 +10,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import time
@@ -343,6 +344,7 @@ class Settings:
         "connections": 16,
         "speed_limit": "0",
         "show_completed_notification": True,
+        "show_download_complete_dialog": True,
         "confirm_delete": True,
         "browser_prompt": True,
         "auto_start_aria2": True,
@@ -638,6 +640,8 @@ class Aria2Client:
         # the preflight resolver obtained a trustworthy remote filename.
         if int(row["file_name_locked"] or 0):
             options["out"] = row["file_name"]
+            options["auto-file-renaming"] = "false"
+            options["always-resume"] = "true"
         if row["source_page"]:
             options["referer"] = row["source_page"]
         if headers:
@@ -654,11 +658,82 @@ class Aria2Client:
         result.extend(self.call("tellStopped", [0, 1000, keys]) or [])
         return result
 
+    def tell_status(self, gid: str) -> dict[str, Any]:
+        keys = [
+            "gid", "status", "totalLength", "completedLength",
+            "downloadSpeed", "errorMessage", "files",
+        ]
+        value = self.call("tellStatus", [gid, keys]) or {}
+        return dict(value) if isinstance(value, dict) else {}
+
     def pause(self, gid: str) -> None:
         self.call("forcePause", [gid])
 
     def resume(self, gid: str) -> None:
         self.call("unpause", [gid])
+
+    def hard_stop(self, gid: str) -> list[str]:
+        primary = self.tell_status(gid)
+        target_paths: set[str] = set()
+
+        for file_info in primary.get("files", []) or []:
+            if not isinstance(file_info, dict):
+                continue
+            raw_path = str(file_info.get("path", "") or "").strip()
+            if raw_path:
+                target_paths.add(
+                    str(Path(raw_path).expanduser().resolve(strict=False))
+                )
+
+        candidates: set[str] = {gid}
+        if target_paths:
+            for state in self.tell_all():
+                status = str(state.get("status", "") or "")
+                if status not in {"active", "waiting", "paused"}:
+                    continue
+
+                state_gid = str(state.get("gid", "") or "")
+                if not state_gid:
+                    continue
+
+                state_paths: set[str] = set()
+                for file_info in state.get("files", []) or []:
+                    if not isinstance(file_info, dict):
+                        continue
+                    raw_path = str(file_info.get("path", "") or "").strip()
+                    if raw_path:
+                        state_paths.add(
+                            str(Path(raw_path).expanduser().resolve(strict=False))
+                        )
+
+                if target_paths.intersection(state_paths):
+                    candidates.add(state_gid)
+
+        stopped: list[str] = []
+        errors: list[str] = []
+
+        # Best effort forcePause first so aria2 can persist its control-file
+        # state, then forceRemove to terminate all live sockets immediately.
+        for candidate in sorted(candidates):
+            try:
+                with contextlib.suppress(Exception):
+                    self.call("forcePause", [candidate])
+                self.call("forceRemove", [candidate])
+                stopped.append(candidate)
+            except Exception as exc:
+                try:
+                    state = self.tell_status(candidate)
+                    if str(state.get("status", "") or "") == "removed":
+                        stopped.append(candidate)
+                        continue
+                except Exception:
+                    pass
+                errors.append(f"{candidate}: {exc}")
+
+        if errors and not stopped:
+            raise Aria2Error("; ".join(errors))
+
+        return stopped
 
     def remove(self, gid: str) -> None:
         try:
@@ -683,7 +758,26 @@ class Aria2Client:
 
 def install_native_manifests() -> list[Path]:
     chrome_id = "fnindjfclfmejhmeilmnmmgfbegecnkf"
-    executable = "/usr/lib/udownload/native_host.py"
+
+    # Chrome/Chromium must execute an actual executable path. Using the .py
+    # file directly depends on its mode bits surviving packaging. Keep a tiny
+    # per-user executable wrapper and point every native-messaging manifest to
+    # it. This also works while running directly from the source tree.
+    source_host = Path(__file__).resolve().with_name("native_host.py")
+    installed_host = Path("/usr/lib/udownload/native_host.py")
+    host_script = installed_host if installed_host.exists() else source_host
+
+    wrapper = DATA_DIR / "native-host"
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        "exec /usr/bin/python3 "
+        + shlex.quote(str(host_script))
+        + "\n",
+        encoding="utf-8",
+    )
+    wrapper.chmod(0o755)
+    executable = str(wrapper)
+
     manifests: list[tuple[Path, dict[str, Any]]] = []
     chrome_manifest = {
         "name": "com.ideveloper.udownload.native",

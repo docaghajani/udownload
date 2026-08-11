@@ -793,12 +793,23 @@ class OptionsDialog(Gtk.Dialog):
         self.prompt_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.prompt_box.set_halign(Gtk.Align.START)
         self.prompt_box.append(self.prompt)
+
+        self.complete_dialog = Gtk.Switch(
+            active=bool(settings.get("show_download_complete_dialog", True))
+        )
+        self.complete_dialog.set_halign(Gtk.Align.START)
+        self.complete_dialog.set_valign(Gtk.Align.CENTER)
+        self.complete_dialog_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.complete_dialog_box.set_halign(Gtk.Align.START)
+        self.complete_dialog_box.append(self.complete_dialog)
+
         rows = [
             ("Default download folder", self.dir_box),
             ("Simultaneous downloads", self.concurrent),
             ("Connections per download", self.connections),
             ("Global speed limit (e.g. 2M, 0=unlimited)", self.speed),
             ("Show file-info dialog for browser downloads", self.prompt_box),
+            ("Show download-complete dialog", self.complete_dialog_box),
         ]
         for idx, (label, widget) in enumerate(rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, idx, 1, 1)
@@ -813,6 +824,7 @@ class OptionsDialog(Gtk.Dialog):
                 "connections": int(self.connections.get_value()),
                 "speed_limit": self.speed.get_text().strip() or "0",
                 "browser_prompt": self.prompt.get_active(),
+                "show_download_complete_dialog": self.complete_dialog.get_active(),
             }
             self.on_save(values)
         self.destroy()
@@ -821,6 +833,7 @@ class OptionsDialog(Gtk.Dialog):
 class BrowserIntegrationDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window):
         super().__init__(title="Browser Integration", transient_for=parent, modal=True)
+        self.parent_window = parent
         self.set_default_size(650, 420)
         self.add_button("Close", Gtk.ResponseType.CLOSE)
         area = self.get_content_area()
@@ -847,14 +860,239 @@ class BrowserIntegrationDialog(Gtk.Dialog):
         chrome = Gtk.Button(label="Open Chrome extensions")
         firefox = Gtk.Button(label="Open Firefox debugging")
         folder = Gtk.Button(label="Open extension folder")
+        repair = Gtk.Button(label="Repair native host")
         chrome.connect("clicked", lambda *_: launch_browser_extensions_page("chrome"))
         firefox.connect("clicked", lambda *_: launch_browser_extensions_page("firefox"))
         folder.connect("clicked", lambda *_: subprocess.Popen(["xdg-open", "/usr/share/udownload/browser"]))
+        repair.connect("clicked", self._repair_native_host)
         buttons.append(chrome)
         buttons.append(firefox)
         buttons.append(folder)
+        buttons.append(repair)
         area.append(buttons)
         self.connect("response", lambda *_: self.destroy())
+
+    def _repair_native_host(self, *_args) -> None:
+        try:
+            paths = install_native_manifests()
+            self.parent_window.status_label.set_text(
+                f"Browser native host repaired ({len(paths)} manifests written)"
+            )
+        except Exception as exc:
+            self.parent_window.status_label.set_text(
+                f"Could not repair browser native host: {exc}"
+            )
+
+
+class DownloadCompleteDialog(Gtk.Dialog):
+    def __init__(self, parent: "MainWindow", item: DownloadObject):
+        super().__init__(
+            title="Download complete",
+            transient_for=parent,
+            modal=False,
+        )
+        self.parent_window = parent
+        self.item = item
+        self._changing_checkbox = False
+        self.set_default_size(610, 310)
+
+        area = self.get_content_area()
+        area.set_spacing(10)
+        area.set_margin_top(14)
+        area.set_margin_bottom(14)
+        area.set_margin_start(14)
+        area.set_margin_end(14)
+
+        heading = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        icon = Gtk.Image.new_from_icon_name("folder-download-symbolic")
+        icon.set_pixel_size(42)
+        heading.append(icon)
+
+        title_box = Gtk.Box(
+            orientation=Gtk.Orientation.VERTICAL,
+            spacing=3,
+            hexpand=True,
+        )
+        done = Gtk.Label(label="Download complete", xalign=0)
+        done.add_css_class("title-3")
+        title_box.append(done)
+
+        final_bytes = item.completed or item.total
+        size = Gtk.Label(
+            label=f"Downloaded {format_bytes(final_bytes)}"
+            + (f" ({final_bytes} Bytes)" if final_bytes else ""),
+            xalign=0,
+        )
+        size.add_css_class("dim-label")
+        title_box.append(size)
+        heading.append(title_box)
+
+        self.drag_button = Gtk.Button()
+        self.drag_button.set_tooltip_text(
+            "Drag the completed file to a folder or another application"
+        )
+        drag_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        drag_icon = Gtk.Image.new_from_icon_name("document-send-symbolic")
+        drag_icon.set_pixel_size(28)
+        drag_box.append(drag_icon)
+        drag_box.append(Gtk.Label(label="Drag"))
+        self.drag_button.set_child(drag_box)
+        heading.append(self.drag_button)
+
+        self.drag_source = Gtk.DragSource()
+        self.drag_source.set_actions(
+            Gdk.DragAction.COPY | Gdk.DragAction.MOVE
+        )
+        self.drag_source.connect("prepare", self._prepare_drag)
+        self.drag_source.connect("drag-end", self._drag_end)
+        self.drag_button.add_controller(self.drag_source)
+
+        area.append(heading)
+
+        grid = Gtk.Grid(column_spacing=10, row_spacing=8)
+        area.append(grid)
+
+        self.address_entry = Gtk.Entry(hexpand=True)
+        self.address_entry.set_text(item.url)
+        self.address_entry.set_editable(False)
+
+        self.path_entry = Gtk.Entry(hexpand=True)
+        self.path_entry.set_text(str(parent._path_for_item(item)))
+        self.path_entry.set_editable(False)
+
+        for index, (label_text, widget) in enumerate([
+            ("Address", self.address_entry),
+            ("The file saved as", self.path_entry),
+        ]):
+            grid.attach(Gtk.Label(label=label_text, xalign=0), 0, index, 1, 1)
+            grid.attach(widget, 1, index, 1, 1)
+
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        open_button = Gtk.Button(label="Open")
+        open_with_button = Gtk.Button(label="Open with…")
+        folder_button = Gtk.Button(label="Open folder")
+        close_button = Gtk.Button(label="Close")
+
+        path = parent._path_for_item(item)
+        open_button.set_sensitive(path.exists())
+        open_with_button.set_sensitive(path.exists())
+        folder_button.set_sensitive(Path(item.save_dir).expanduser().exists())
+
+        open_button.connect("clicked", lambda *_: parent._open_item(item))
+        open_with_button.connect("clicked", lambda *_: parent._open_with_item(item))
+        folder_button.connect("clicked", lambda *_: parent._open_item_folder(item))
+        close_button.connect("clicked", lambda *_: self.destroy())
+
+        actions.append(open_button)
+        actions.append(open_with_button)
+        actions.append(folder_button)
+        actions.append(Gtk.Box(hexpand=True))
+        actions.append(close_button)
+        area.append(actions)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.dont_show = Gtk.CheckButton(
+            label="Don't show this dialog again"
+        )
+        self.dont_show.connect("toggled", self._dont_show_toggled)
+        footer.append(self.dont_show)
+        area.append(footer)
+
+    def _prepare_drag(
+        self,
+        _source: Gtk.DragSource,
+        _x: float,
+        _y: float,
+    ):
+        path = self.parent_window._path_for_item(self.item)
+        if not path.exists():
+            self.parent_window.status_label.set_text(
+                f"File not found: {path}"
+            )
+            return None
+
+        uri = Gio.File.new_for_path(str(path)).get_uri()
+        payload = (uri + "\r\n").encode("utf-8")
+        return Gdk.ContentProvider.new_for_bytes(
+            "text/uri-list",
+            GLib.Bytes.new(payload),
+        )
+
+    def _drag_end(
+        self,
+        _source: Gtk.DragSource,
+        _drag,
+        delete_data: bool,
+    ) -> None:
+        if not delete_data:
+            return
+
+        path = self.parent_window._path_for_item(self.item)
+        if path.exists():
+            try:
+                path.unlink()
+            except Exception as exc:
+                self.parent_window.status_label.set_text(
+                    f"Could not finish file move: {exc}"
+                )
+                return
+
+        self.parent_window.status_label.set_text(
+            f"File moved by drag-and-drop: {self.item.file_name}"
+        )
+        self.path_entry.set_text("The file has been moved.")
+
+    def _dont_show_toggled(self, check: Gtk.CheckButton) -> None:
+        if self._changing_checkbox or not check.get_active():
+            return
+
+        confirm = Gtk.Dialog(
+            title="Disable download-complete dialog?",
+            transient_for=self,
+            modal=True,
+        )
+        confirm.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        disable = confirm.add_button("Disable", Gtk.ResponseType.OK)
+        with contextlib.suppress(Exception):
+            disable.add_css_class("destructive-action")
+        confirm.set_default_response(Gtk.ResponseType.CANCEL)
+
+        box = confirm.get_content_area()
+        box.set_margin_top(18)
+        box.set_margin_bottom(18)
+        box.set_margin_start(18)
+        box.set_margin_end(18)
+        box.append(
+            Gtk.Label(
+                label=(
+                    "Stop showing the Download complete dialog?\n\n"
+                    "You can turn it back on later from Options → "
+                    "Show download-complete dialog."
+                ),
+                xalign=0,
+                wrap=True,
+            )
+        )
+
+        def response(dialog: Gtk.Dialog, value: int) -> None:
+            if value == Gtk.ResponseType.OK:
+                self.parent_window.settings.set(
+                    "show_download_complete_dialog",
+                    False,
+                )
+                self.parent_window.status_label.set_text(
+                    "Download-complete dialog disabled; it can be restored from Options"
+                )
+            else:
+                self._changing_checkbox = True
+                try:
+                    self.dont_show.set_active(False)
+                finally:
+                    self._changing_checkbox = False
+            dialog.destroy()
+
+        confirm.connect("response", response)
+        confirm.present()
 
 
 class DownloadProgressDialog(Gtk.Dialog):
@@ -870,10 +1108,34 @@ class DownloadProgressDialog(Gtk.Dialog):
         self.download_id = int(download_id)
         self._source_id = 0
         self._completion_handled = False
+        self._action_busy = False
+        self._closed = False
         self.set_default_size(620, 430)
 
-        self.add_button("Close", Gtk.ResponseType.CLOSE)
-        self.connect("response", lambda *_: self.destroy())
+        self.details_button = self.add_button(
+            "Show details",
+            Gtk.ResponseType.NONE,
+        )
+        self.minimize_button = self.add_button(
+            "Minimize",
+            Gtk.ResponseType.NONE,
+        )
+        self.pause_button = self.add_button(
+            "Pause",
+            Gtk.ResponseType.NONE,
+        )
+        self.cancel_button = self.add_button(
+            "Cancel",
+            Gtk.ResponseType.NONE,
+        )
+
+        self.details_button.connect("clicked", self._show_details)
+        self.minimize_button.connect("clicked", self._minimize_to_list)
+        self.pause_button.connect("clicked", self._pause_or_resume)
+        self.cancel_button.connect("clicked", self._cancel_download)
+
+        self.connect("response", self._on_dialog_response)
+        self.connect("close-request", self._on_close_request)
         self.connect("destroy", self._on_destroy)
 
         area = self.get_content_area()
@@ -918,16 +1180,7 @@ class DownloadProgressDialog(Gtk.Dialog):
         status_tab.append(self.progress)
 
         status_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        self.details_button = Gtk.Button(label="Show details")
-        self.pause_button = Gtk.Button(label="Pause")
-        self.cancel_button = Gtk.Button(label="Cancel")
-        self.details_button.connect("clicked", self._show_details)
-        self.pause_button.connect("clicked", self._pause_or_resume)
-        self.cancel_button.connect("clicked", self._cancel_download)
-        status_actions.append(self.details_button)
-        status_actions.append(Gtk.Box(hexpand=True))
-        status_actions.append(self.pause_button)
-        status_actions.append(self.cancel_button)
+        status_actions.set_visible(False)
         status_tab.append(status_actions)
 
         self.notebook.append_page(status_tab, Gtk.Label(label="Download status"))
@@ -1009,12 +1262,12 @@ class DownloadProgressDialog(Gtk.Dialog):
         self.progress.set_fraction(fraction)
         self.progress.set_text(item.progress_text or "Resolving…")
 
-        if item.status == "active":
+        if item.status == "active" or (item.status == "waiting" and item.gid):
             self.pause_button.set_label("Pause")
-            self.pause_button.set_sensitive(True)
-        elif item.status in {"paused", "waiting"}:
+            self.pause_button.set_sensitive(not self._action_busy)
+        elif item.status == "paused" or (item.status == "waiting" and not item.gid):
             self.pause_button.set_label("Resume")
-            self.pause_button.set_sensitive(True)
+            self.pause_button.set_sensitive(not self._action_busy)
         elif item.status == "complete":
             self.pause_button.set_label("Open")
             self.pause_button.set_sensitive(True)
@@ -1026,23 +1279,174 @@ class DownloadProgressDialog(Gtk.Dialog):
         return GLib.SOURCE_CONTINUE
 
     def _pause_or_resume(self, *_args) -> None:
+        if self._action_busy:
+            return
+
         _row, item = self._row_and_item()
         if item is None:
             return
         if item.status == "complete":
             self.parent_window._open_item(item)
             return
-        if item.status == "active":
-            self.parent_window._pause_item(item)
-        else:
-            self.parent_window._resume_item(item)
-        self._refresh()
+
+        if not item.gid:
+            self._action_busy = True
+            self.pause_button.set_sensitive(False)
+            try:
+                self.parent_window._start_db_download(item.db_id)
+            finally:
+                self._action_busy = False
+            GLib.timeout_add(150, self._refresh_once)
+            return
+
+        self._action_busy = True
+        self.pause_button.set_sensitive(False)
+        threading.Thread(
+            target=self._toggle_transfer_worker,
+            args=(item.gid,),
+            daemon=True,
+        ).start()
+
+    def _toggle_transfer_worker(self, gid: str) -> None:
+        error = ""
+        action = ""
+        snapshot: dict = {}
+        hard_stopped = False
+
+        try:
+            snapshot = self.parent_window.aria.tell_status(gid)
+            live_status = str(snapshot.get("status", "") or "")
+
+            if live_status in {"active", "waiting", "paused"}:
+                self.parent_window.aria.hard_stop(gid)
+                hard_stopped = True
+                action = "paused"
+            elif live_status == "complete":
+                action = "complete"
+            elif live_status == "removed":
+                hard_stopped = True
+                action = "paused"
+            else:
+                raise Aria2Error(
+                    f"Download cannot be paused/resumed while status is "
+                    f"{live_status or 'unknown'}"
+                )
+        except Exception as exc:
+            error = str(exc)
+
+        GLib.idle_add(
+            self._toggle_transfer_done,
+            action,
+            error,
+            gid,
+            snapshot,
+            hard_stopped,
+        )
+
+    def _toggle_transfer_done(
+        self,
+        action: str,
+        error: str,
+        gid: str,
+        snapshot: dict,
+        hard_stopped: bool,
+    ) -> bool:
+        self._action_busy = False
+
+        if hard_stopped and action == "paused":
+            self.parent_window._commit_hard_pause(
+                self.download_id,
+                gid,
+                snapshot,
+            )
+        elif snapshot:
+            with contextlib.suppress(Exception):
+                self.parent_window.db.update_state(gid, snapshot)
+
+        self.parent_window.load_rows()
+
+        if error:
+            self.parent_window.status_label.set_text(
+                f"Could not change download state: {error}"
+            )
+        elif action == "paused":
+            self.parent_window.status_label.set_text(
+                "Download paused (hard stop)"
+            )
+        elif action == "resumed":
+            self.parent_window.status_label.set_text("Download resumed")
+
+        if not self._closed:
+            self._refresh()
+        return GLib.SOURCE_REMOVE
+
+    def _refresh_once(self) -> bool:
+        if not self._closed:
+            self._refresh()
+        return GLib.SOURCE_REMOVE
+
+    def _minimize_to_list(self, *_args) -> None:
+        self.destroy()
+
+    def _on_dialog_response(self, _dialog, response_id: int) -> None:
+        if response_id in {
+            Gtk.ResponseType.CLOSE,
+            Gtk.ResponseType.CANCEL,
+            Gtk.ResponseType.DELETE_EVENT,
+        }:
+            self.destroy()
+
+    def _on_close_request(self, *_args) -> bool:
+        self.destroy()
+        return True
 
     def _cancel_download(self, *_args) -> None:
         _row, item = self._row_and_item()
-        if item is not None and item.status in {"active", "waiting"}:
-            self.parent_window._pause_item(item)
+        if item is None:
+            self.destroy()
+            return
+
+        if not item.gid:
+            self.destroy()
+            return
+
+        download_id = item.db_id
+        gid = item.gid
         self.destroy()
+
+        def worker() -> None:
+            error = ""
+            snapshot: dict = {}
+            hard_stopped = False
+
+            try:
+                snapshot = self.parent_window.aria.tell_status(gid)
+                live_status = str(snapshot.get("status", "") or "")
+
+                if live_status == "complete":
+                    pass
+                elif live_status in {"active", "waiting", "paused", "removed"}:
+                    if live_status != "removed":
+                        self.parent_window.aria.hard_stop(gid)
+                    hard_stopped = True
+                else:
+                    raise Aria2Error(
+                        f"Download cannot be cancelled while status is "
+                        f"{live_status or 'unknown'}"
+                    )
+            except Exception as exc:
+                error = str(exc)
+
+            GLib.idle_add(
+                self.parent_window._progress_cancel_done,
+                download_id,
+                gid,
+                snapshot,
+                hard_stopped,
+                error,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _show_details(self, *_args) -> None:
         _row, item = self._row_and_item()
@@ -1079,10 +1483,10 @@ class DownloadProgressDialog(Gtk.Dialog):
             self.parent_window._open_item(item)
         if self.open_folder_done.get_active():
             self.parent_window._open_item_folder(item)
-        if self.close_window_done.get_active():
-            GLib.idle_add(lambda: (self.destroy(), GLib.SOURCE_REMOVE)[1])
+        GLib.idle_add(lambda: (self.destroy(), GLib.SOURCE_REMOVE)[1])
 
     def _on_destroy(self, *_args) -> None:
+        self._closed = True
         if self._source_id:
             with contextlib.suppress(Exception):
                 GLib.source_remove(self._source_id)
@@ -1643,6 +2047,12 @@ class DownloadPropertiesDialog(Gtk.Dialog):
         if item.total:
             size_text += f" ({item.total} bytes)"
 
+        save_to_text = (
+            str(path)
+            if path.exists() or item.status != "complete"
+            else "The file has been moved."
+        )
+
         values = [
             ("Type", mime_text),
             ("Status", item.status_text),
@@ -1650,7 +2060,7 @@ class DownloadPropertiesDialog(Gtk.Dialog):
             ("Progress", item.progress_text or "—"),
             ("Time left", item.eta_text or "—"),
             ("Transfer rate", item.speed_text or "—"),
-            ("Save to", str(path)),
+            ("Save to", save_to_text),
             ("Address", item.url),
             ("Description", item.description or ""),
             ("Source page / Referrer", str(row["source_page"] or "")),
@@ -1701,6 +2111,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.column_width_save_source = 0
         self._restoring_layout = False
         self._scheduler_startup_pending = True
+        self._progress_windows: dict[int, Gtk.Window] = {}
+        self._completion_dialog_ids: set[int] = set()
         self.set_default_size(int(self.settings.get("window_width", 1180)), int(self.settings.get("window_height", 720)))
         self.set_icon_name("udownload")
         install_native_manifests()
@@ -1917,7 +2329,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.12",
+            version="1.0.17",
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -2079,8 +2491,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _activate_row(self, _view, position: int) -> None:
         item = self.sort_model.get_item(position)
-        if isinstance(item, DownloadObject):
-            self.show_properties(item)
+        if not isinstance(item, DownloadObject):
+            return
+
+        if item.status in {"active", "paused", "waiting"}:
+            self._show_download_progress_after_start(item.db_id)
+            return
+
+        self.show_properties(item)
 
     @staticmethod
     def _path_for_item(item: DownloadObject) -> Path:
@@ -2212,9 +2630,12 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _pause_item(self, item: DownloadObject) -> None:
         if item.gid:
-            with contextlib.suppress(Exception):
-                self.aria.pause(item.gid)
-        self.refresh()
+            self._run_selected_transfer_command(
+                item.db_id,
+                item.gid,
+                "pause",
+                show_progress=False,
+            )
 
     def _remove_item(self, item: DownloadObject) -> None:
         self._select_db_id(item.db_id)
@@ -2339,10 +2760,29 @@ class MainWindow(Gtk.ApplicationWindow):
             return GLib.SOURCE_CONTINUE
         self.refresh_busy = True
         try:
+            completed_ids: list[int] = []
             if self.aria.ping():
                 for state in self.aria.tell_all():
-                    self.db.update_state(state.get("gid", ""), state)
+                    gid = str(state.get("gid", "") or "")
+                    before = self.db.get_by_gid(gid) if gid else None
+                    was_complete = bool(
+                        before is not None and str(before["status"]) == "complete"
+                    )
+                    self.db.update_state(gid, state)
+                    if (
+                        gid
+                        and str(state.get("status", "")) == "complete"
+                        and not was_complete
+                    ):
+                        after = self.db.get_by_gid(gid)
+                        if after is not None:
+                            completed_ids.append(int(after["id"]))
             self.load_rows(skip_if_scrolling=True)
+            for download_id in completed_ids:
+                GLib.idle_add(
+                    self._show_download_complete_for_id,
+                    download_id,
+                )
         except Exception as exc:
             self.status_label.set_text(f"Engine: {exc}")
         finally:
@@ -2431,8 +2871,44 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _show_download_progress_after_start(self, download_id: int) -> bool:
         row = self.db.get(download_id)
-        if row is not None:
-            DownloadProgressDialog(self, download_id).present()
+        if row is None:
+            return GLib.SOURCE_REMOVE
+
+        existing = self._progress_windows.get(download_id)
+        if existing is not None:
+            with contextlib.suppress(Exception):
+                existing.present()
+            return GLib.SOURCE_REMOVE
+
+        dialog = DownloadProgressDialog(self, download_id)
+        self._progress_windows[download_id] = dialog
+
+        def cleanup(*_args) -> None:
+            self._progress_windows.pop(download_id, None)
+
+        dialog.connect("destroy", cleanup)
+        dialog.present()
+        return GLib.SOURCE_REMOVE
+
+    def _show_download_complete_for_id(self, download_id: int) -> bool:
+        if not bool(self.settings.get("show_download_complete_dialog", True)):
+            return GLib.SOURCE_REMOVE
+        if download_id in self._completion_dialog_ids:
+            return GLib.SOURCE_REMOVE
+
+        row = self.db.get(download_id)
+        if row is None or str(row["status"]) != "complete":
+            return GLib.SOURCE_REMOVE
+
+        item = DownloadObject(row)
+        dialog = DownloadCompleteDialog(self, item)
+        self._completion_dialog_ids.add(download_id)
+
+        def cleanup(*_args) -> None:
+            self._completion_dialog_ids.discard(download_id)
+
+        dialog.connect("destroy", cleanup)
+        dialog.present()
         return GLib.SOURCE_REMOVE
 
     def _start_db_download(self, download_id: int) -> None:
@@ -2722,23 +3198,184 @@ class MainWindow(Gtk.ApplicationWindow):
         self._scheduler_startup_pending = False
         return GLib.SOURCE_CONTINUE
 
+    def _commit_hard_pause(
+        self,
+        download_id: int,
+        gid: str,
+        snapshot: dict,
+    ) -> None:
+        # All SQLite writes happen here on GTK's main thread.
+        if snapshot:
+            with contextlib.suppress(Exception):
+                self.db.update_state(gid, snapshot)
+
+        row = self.db.get(download_id)
+        if row is None:
+            return
+
+        current_gid = str(row["gid"] or "")
+        # Never let an old worker callback erase a newer Resume GID.
+        if current_gid and current_gid != gid:
+            return
+
+        self.db.conn.execute(
+            "UPDATE downloads SET "
+            "gid=NULL,status='paused',download_speed=0," 
+            "file_name_locked=1,error_message='' WHERE id=?",
+            (download_id,),
+        )
+        self.db.conn.commit()
+
+    def _progress_cancel_done(
+        self,
+        download_id: int,
+        gid: str,
+        snapshot: dict,
+        hard_stopped: bool,
+        error: str,
+    ) -> bool:
+        if hard_stopped:
+            self._commit_hard_pause(download_id, gid, snapshot)
+        elif snapshot:
+            with contextlib.suppress(Exception):
+                self.db.update_state(gid, snapshot)
+
+        self.load_rows()
+
+        if error:
+            self.status_label.set_text(f"Could not cancel download: {error}")
+        elif hard_stopped:
+            self.status_label.set_text(
+                "Download cancelled and kept resumable"
+            )
+        else:
+            self.status_label.set_text("Download already completed")
+
+        return GLib.SOURCE_REMOVE
+
     def pause_selected(self) -> None:
         item = self._selected()
-        if item and item.gid:
-            with contextlib.suppress(Exception):
-                self.aria.pause(item.gid)
-            self.refresh()
+        if not item or not item.gid:
+            return
+        self._run_selected_transfer_command(
+            item.db_id,
+            item.gid,
+            "pause",
+            show_progress=False,
+        )
 
     def resume_selected(self) -> None:
         item = self._selected()
         if not item:
             return
-        if item.gid:
-            with contextlib.suppress(Exception):
-                self.aria.resume(item.gid)
-        else:
+
+        if not item.gid:
             self._start_db_download(item.db_id)
-        self.refresh()
+            GLib.timeout_add(
+                150,
+                self._show_download_progress_after_start,
+                item.db_id,
+            )
+            return
+
+        self._run_selected_transfer_command(
+            item.db_id,
+            item.gid,
+            "resume",
+            show_progress=True,
+        )
+
+    def _run_selected_transfer_command(
+        self,
+        download_id: int,
+        gid: str,
+        command: str,
+        show_progress: bool,
+    ) -> None:
+        self.status_label.set_text(
+            "Pausing download…" if command == "pause" else "Resuming download…"
+        )
+
+        def worker() -> None:
+            error = ""
+            snapshot: dict = {}
+            hard_stopped = False
+
+            try:
+                snapshot = self.aria.tell_status(gid)
+                live_status = str(snapshot.get("status", "") or "")
+
+                if command == "pause":
+                    if live_status in {"active", "waiting", "paused"}:
+                        self.aria.hard_stop(gid)
+                        hard_stopped = True
+                    elif live_status == "removed":
+                        hard_stopped = True
+                    elif live_status != "complete":
+                        raise Aria2Error(
+                            f"Download cannot be paused while status is "
+                            f"{live_status or 'unknown'}"
+                        )
+                else:
+                    if live_status == "paused":
+                        self.aria.resume(gid)
+                        threading.Event().wait(0.15)
+                        snapshot = self.aria.tell_status(gid)
+                    elif live_status not in {"active", "waiting", "complete"}:
+                        raise Aria2Error(
+                            f"Download cannot be resumed while status is "
+                            f"{live_status or 'unknown'}"
+                        )
+            except Exception as exc:
+                error = str(exc)
+
+            GLib.idle_add(
+                self._selected_transfer_command_done,
+                download_id,
+                gid,
+                command,
+                show_progress,
+                snapshot,
+                hard_stopped,
+                error,
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _selected_transfer_command_done(
+        self,
+        download_id: int,
+        gid: str,
+        command: str,
+        show_progress: bool,
+        snapshot: dict,
+        hard_stopped: bool,
+        error: str,
+    ) -> bool:
+        if hard_stopped and command == "pause":
+            self._commit_hard_pause(download_id, gid, snapshot)
+        elif snapshot:
+            with contextlib.suppress(Exception):
+                self.db.update_state(gid, snapshot)
+
+        self.load_rows()
+
+        if error:
+            self.status_label.set_text(
+                f"Could not {command} download: {error}"
+            )
+            return GLib.SOURCE_REMOVE
+
+        self.status_label.set_text(
+            "Download paused (hard stop)"
+            if command == "pause"
+            else "Download resumed"
+        )
+
+        if show_progress:
+            self._show_download_progress_after_start(download_id)
+
+        return GLib.SOURCE_REMOVE
 
     def pause_all(self) -> None:
         with contextlib.suppress(Exception):

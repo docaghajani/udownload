@@ -10,7 +10,24 @@ function sendNative(message) {
   return new Promise((resolve) => {
     chrome.runtime.sendNativeMessage(HOST, message, (reply) => {
       const error = chrome.runtime.lastError;
-      resolve(error ? {ok: false, error: error.message} : (reply || {ok: true}));
+      const result = error
+        ? {ok: false, error: error.message}
+        : (reply || {ok: true});
+
+      if (!result || result.ok === false) {
+        const reason = result?.error || "Native host unavailable";
+        console.error("UDownload native messaging error:", reason);
+        chrome.action.setBadgeText({text: "!"});
+        chrome.action.setBadgeBackgroundColor({color: "#c01c28"});
+        chrome.action.setTitle({
+          title: `UDownload: ${reason}. Start UDownload and use Browser Integration → Repair native host.`
+        });
+      } else {
+        chrome.action.setBadgeText({text: ""});
+        chrome.action.setTitle({title: "UDownload"});
+      }
+
+      resolve(result);
     });
   });
 }
@@ -28,13 +45,14 @@ async function cookieHeader(url) {
 
 function createMenus() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({id: "udm-link", title: "Download with UDM", contexts: ["link", "image", "video", "audio"]});
-    chrome.contextMenus.create({id: "udm-selected", title: "Download selected links with UDM", contexts: ["selection", "page"]});
-    chrome.contextMenus.create({id: "udm-all", title: "Download all links with UDM", contexts: ["page"]});
+    chrome.contextMenus.create({id: "udm-link", title: "Download with UDownload", contexts: ["link", "image", "video", "audio"]});
+    chrome.contextMenus.create({id: "udm-selected", title: "Download selected links with UDownload", contexts: ["selection", "page"]});
+    chrome.contextMenus.create({id: "udm-all", title: "Download all links with UDownload", contexts: ["page"]});
   });
 }
 chrome.runtime.onInstalled.addListener(createMenus);
 chrome.runtime.onStartup.addListener(createMenus);
+createMenus();
 
 async function collectLinks(tabId, mode) {
   const results = await chrome.scripting.executeScript({

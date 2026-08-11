@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "Ubuntu Download Manager Integration",
-  "version": "1.0.12",
-  "description": "Send links and browser downloads to Ubuntu Download Manager.",
+  "name": "UDownload Integration",
+  "version": "1.0.17",
+  "description": "Send links and browser downloads to UDownload.",
   "browser_specific_settings": {
     "gecko": {
       "id": "udownload@ideveloper.local",
@@ -24,7 +24,7 @@
     ]
   },
   "browser_action": {
-    "default_title": "Ubuntu Download Manager",
+    "default_title": "UDownload",
     "default_popup": "popup.html",
     "default_icon": "icon48.png"
   },
