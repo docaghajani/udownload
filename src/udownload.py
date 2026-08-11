@@ -37,6 +37,7 @@ from core import (
     looks_like_placeholder_filename,
     resolve_remote_file,
     safe_filename,
+    unique_path,
 )
 
 
@@ -111,9 +112,8 @@ class DownloadObject(GObject.Object):
     @property
     def status_text(self) -> str:
         label = STATUS_LABELS.get(self.status, self.status.title())
-        if self.status == "active" and self.total:
-            percent = min(100, (self.completed / self.total) * 100)
-            return f"{label} {percent:.1f}%"
+        if self.status == "active":
+            return label
         if self.status == "error" and self.error_message:
             return f"Error: {self.error_message}"
         if self.status == "scheduled" and self.start_time:
@@ -130,8 +130,37 @@ class DownloadObject(GObject.Object):
         return str(self.added_at).replace("T", " ")
 
     @property
+    def progress_text(self) -> str:
+        if self.status == "complete":
+            return "100.0%"
+        if self.total <= 0:
+            return ""
+        percent = min(100.0, max(0.0, (self.completed / self.total) * 100.0))
+        return f"{percent:.1f}%"
+
+    @property
     def eta_text(self) -> str:
-        return format_eta(self.total, self.completed, self.speed)
+        if self.status == "complete":
+            return "0s"
+        if self.status != "active":
+            return ""
+        if self.total <= 0 or self.completed >= self.total or self.speed <= 0:
+            return "Calculating…"
+
+        eta = format_eta(self.total, self.completed, self.speed)
+        if eta:
+            return eta
+
+        remaining = max(0, self.total - self.completed)
+        seconds = max(1, (remaining + self.speed - 1) // self.speed)
+        minutes, sec = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}m {sec}s"
+        hours, minutes = divmod(minutes, 60)
+        if hours < 24:
+            return f"{hours}h {minutes}m"
+        days, hours = divmod(hours, 24)
+        return f"{days}d {hours}h"
 
     @property
     def speed_text(self) -> str:
@@ -159,6 +188,7 @@ class AddDownloadDialog(Gtk.Dialog):
         )
         self._resolve_token = 0
         self._resolve_source_id = 0
+        self._filename_base = ""
 
         area = self.get_content_area()
         area.set_spacing(10)
@@ -175,10 +205,13 @@ class AddDownloadDialog(Gtk.Dialog):
         self.file_entry = Gtk.Entry(hexpand=True)
         filename = initial.get("filename") or safe_filename(initial.get("url", ""))
         self.file_entry.set_text(filename)
+        self._filename_base = filename
         self.file_entry.connect("changed", self._on_filename_changed)
+        self.file_entry.connect("notify::has-focus", self._on_filename_focus_changed)
         self.url_entry.connect("changed", self._on_url_changed)
         self.dir_entry = Gtk.Entry(hexpand=True)
         self.dir_entry.set_text(initial.get("save_dir", str(Path.home() / "Downloads")))
+        self.dir_entry.connect("changed", self._on_directory_changed)
         self.dir_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, hexpand=True)
         self.dir_box.append(self.dir_entry)
         self.dir_browse = Gtk.Button(label="Browse…")
@@ -276,11 +309,71 @@ class AddDownloadDialog(Gtk.Dialog):
         grid.attach(self.resolve_label, 1, len(labels) + 1, 1, 1)
 
         self.connect("response", self._on_response)
+        self._refresh_unique_filename()
         if self.url_entry.get_text().strip():
             self._schedule_resolve(delay_ms=50)
+        else:
+            self._prefill_url_from_clipboard()
 
-    def _on_filename_changed(self, _entry: Gtk.Entry) -> None:
+    def _prefill_url_from_clipboard(self) -> None:
+        display = Gdk.Display.get_default()
+        if display is None:
+            return
+        clipboard = display.get_clipboard()
+        clipboard.read_text_async(None, self._clipboard_text_ready)
+
+    def _clipboard_text_ready(self, clipboard: Gdk.Clipboard, result: Gio.AsyncResult) -> None:
+        try:
+            text = clipboard.read_text_finish(result)
+        except Exception:
+            return
+        if self.url_entry.get_text().strip():
+            return
+
+        candidate = str(text or "").strip()
+        if not candidate or any(ch.isspace() for ch in candidate):
+            return
+        try:
+            parsed = urllib.parse.urlsplit(candidate)
+        except Exception:
+            return
+        if parsed.scheme.lower() not in {"http", "https", "ftp"} or not parsed.netloc:
+            return
+
+        self.url_entry.set_text(candidate)
+        self._schedule_resolve(delay_ms=25)
+
+    def _unique_filename_for(self, directory: str, filename: str) -> str:
+        filename = str(filename or "").strip()
+        if not filename:
+            return ""
+        target_dir = Path(directory or str(Path.home() / "Downloads")).expanduser()
+        return unique_path(target_dir, filename).name
+
+    def _refresh_unique_filename(self) -> None:
+        base = str(self._filename_base or self.file_entry.get_text() or "").strip()
+        if not base:
+            return
+        directory = self.dir_entry.get_text().strip()
+        suggested = self._unique_filename_for(directory, base)
+        if not suggested or suggested == self.file_entry.get_text():
+            return
+        self._updating_filename = True
+        try:
+            self.file_entry.set_text(suggested)
+        finally:
+            self._updating_filename = False
+
+    def _on_directory_changed(self, _entry: Gtk.Entry) -> None:
+        self._refresh_unique_filename()
+
+    def _on_filename_focus_changed(self, entry: Gtk.Entry, _param) -> None:
+        if not bool(entry.get_property("has-focus")):
+            self._refresh_unique_filename()
+
+    def _on_filename_changed(self, entry: Gtk.Entry) -> None:
         if not self._updating_filename:
+            self._filename_base = entry.get_text().strip()
             self.filename_user_edited = True
             self._resolved_filename_confident = True
 
@@ -336,13 +429,9 @@ class AddDownloadDialog(Gtk.Dialog):
             return GLib.SOURCE_REMOVE
 
         if info.filename and not self.filename_user_edited:
-            self._updating_filename = True
-            try:
-                self.file_entry.set_text(info.filename)
-            finally:
-                self._updating_filename = False
-
+            self._filename_base = info.filename
             self._resolved_filename_confident = bool(info.filename_confident)
+            self._refresh_unique_filename()
             categories = [
                 "General", "Compressed", "Documents", "Music",
                 "Programs", "Video", "Images",
@@ -423,6 +512,7 @@ class AddDownloadDialog(Gtk.Dialog):
         directory = self.dir_entry.get_text().strip()
         if not url or not filename or not directory:
             return
+        filename = self._unique_filename_for(directory, filename)
         categories = ["General", "Compressed", "Documents", "Music", "Programs", "Video", "Images"]
         category = categories[self.category_combo.get_selected()]
         start_time = None
@@ -827,8 +917,9 @@ class MainWindow(Gtk.ApplicationWindow):
         columns = [
             ("File Name", "name", lambda item: item.file_name, 340, True, self._sort_name),
             ("Size", "size", lambda item: item.size_text, 110, False, self._sort_size),
-            ("Status", "status", lambda item: item.status_text, 210, True, self._sort_status),
-            ("Time left", "eta", lambda item: item.eta_text, 100, False, None),
+            ("Status", "status", lambda item: item.status_text, 140, True, self._sort_status),
+            ("Progress", "progress", lambda item: item.progress_text, 90, False, None),
+            ("Time left", "eta", lambda item: item.eta_text, 110, False, None),
             ("Transfer rate", "speed", lambda item: item.speed_text, 120, False, None),
             ("Description", "description", lambda item: item.description, 220, True, None),
             ("Date Added", "date_added", lambda item: item.added_at_text, 155, False, self._sort_date_added),
@@ -912,7 +1003,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.7",
+            version="1.0.9",
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -1549,6 +1640,17 @@ def main() -> int:
         assert category_for_filename("movie.mkv") == "Video"
         assert category_for_filename("archive.rar") == "Compressed"
         assert safe_filename("https://example.com/files/test%20file.zip") == "test file.zip"
+        assert format_eta(4 * 1024**3, 0, 8 * 1024**2) == "8m 32s"
+        duplicate_dir = Path("/tmp/udownload-duplicate-name-test")
+        duplicate_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            (duplicate_dir / "file.iso").touch()
+            (duplicate_dir / "file (1).iso").touch()
+            assert unique_path(duplicate_dir, "file.iso").name == "file (2).iso"
+        finally:
+            (duplicate_dir / "file.iso").unlink(missing_ok=True)
+            (duplicate_dir / "file (1).iso").unlink(missing_ok=True)
+            duplicate_dir.rmdir()
         assert looks_like_placeholder_filename(
             "download", "https://example.com/download?id=123"
         )

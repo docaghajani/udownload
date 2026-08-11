@@ -1,12 +1,32 @@
 {
   "manifest_version": 3,
   "name": "Ubuntu Download Manager Integration",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Send links and browser downloads to Ubuntu Download Manager.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArzw25kXzwxqNDmjDxHeOgjn77bxzK6gVqZL6bCm/Bot/PnOJXvYs6ujys5i90LvYLgDhBB3pWIMiRCAhxxm/TIb2a1qLbVVY2ER7LvRWT2b/iCeh0icFb1MDWYF8Gj2xbLIl3y1Jav3y3neYYciZQ94CkP/z+SavHNHQegs4ebe/xVq0LupMJazN24/blVoePFfFt5+1uiKEaP1LfMFGyRL71z0kYI5qJmuYsUcfb+KnYE7tNDOnmcQh2uDvKqA54OPGYmbYx7Rety4Vs0O8SgOlfW46E4HIIFrPSbi2tpFHr5f4opAvB/XPmE7iaZ9/ObWraByL/KmMDtQw4Ib9jQIDAQAB",
-  "permissions": ["contextMenus", "nativeMessaging", "downloads", "storage", "scripting", "tabs", "cookies"],
-  "host_permissions": ["<all_urls>"],
-  "background": {"service_worker": "background.js"},
-  "action": {"default_title": "Ubuntu Download Manager", "default_popup": "popup.html"},
-  "icons": {"16": "icon16.png", "32": "icon32.png", "48": "icon48.png", "128": "icon128.png"}
+  "permissions": [
+    "contextMenus",
+    "nativeMessaging",
+    "downloads",
+    "storage",
+    "scripting",
+    "tabs",
+    "cookies"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Ubuntu Download Manager",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
 }
