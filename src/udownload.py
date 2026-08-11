@@ -777,6 +777,523 @@ class BrowserIntegrationDialog(Gtk.Dialog):
         self.connect("response", lambda *_: self.destroy())
 
 
+class SchedulerDialog(Gtk.Dialog):
+    WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    def __init__(self, parent: "MainWindow"):
+        super().__init__(title="Scheduler", transient_for=parent, modal=True)
+        self.parent_window = parent
+        self.db = parent.db
+        self.settings = parent.settings
+        self.current_queue = "Main download queue"
+        self._loading = False
+        self.set_default_size(900, 650)
+
+        self.add_button("Close", Gtk.ResponseType.CLOSE)
+        self.connect("response", lambda *_: self.destroy())
+
+        area = self.get_content_area()
+        area.set_spacing(10)
+        area.set_margin_top(12)
+        area.set_margin_bottom(12)
+        area.set_margin_start(12)
+        area.set_margin_end(12)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        area.append(body)
+
+        left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        left.set_size_request(220, -1)
+        left.append(Gtk.Label(label="Queues", xalign=0))
+        self.queue_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        self.queue_list.add_css_class("boxed-list")
+        self.queue_list.connect("row-selected", self._queue_selected)
+        queue_scroll = Gtk.ScrolledWindow(vexpand=True)
+        queue_scroll.set_child(self.queue_list)
+        left.append(queue_scroll)
+
+        queue_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        new_queue = Gtk.Button(label="New queue")
+        delete_queue = Gtk.Button(label="Delete")
+        new_queue.connect("clicked", self._new_queue)
+        delete_queue.connect("clicked", self._delete_queue)
+        queue_actions.append(new_queue)
+        queue_actions.append(delete_queue)
+        left.append(queue_actions)
+        body.append(left)
+
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, hexpand=True)
+        self.queue_title = Gtk.Label(label=self.current_queue, xalign=0)
+        self.queue_title.add_css_class("title-3")
+        right.append(self.queue_title)
+
+        self.notebook = Gtk.Notebook()
+        self.notebook.set_hexpand(True)
+        self.notebook.set_vexpand(True)
+        right.append(self.notebook)
+        body.append(right)
+
+        self._build_schedule_tab()
+        self._build_files_tab()
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        footer.set_halign(Gtk.Align.END)
+        start_now = Gtk.Button(label="Start now")
+        stop_now = Gtk.Button(label="Stop")
+        apply_button = Gtk.Button(label="Apply")
+        start_now.add_css_class("suggested-action")
+        start_now.connect("clicked", self._start_now)
+        stop_now.connect("clicked", self._stop_now)
+        apply_button.connect("clicked", self._apply)
+        footer.append(start_now)
+        footer.append(stop_now)
+        footer.append(apply_button)
+        area.append(footer)
+
+        self._reload_queues()
+        self._select_queue(self.current_queue)
+
+    def _build_schedule_tab(self) -> None:
+        tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        tab.set_margin_top(12)
+        tab.set_margin_bottom(12)
+        tab.set_margin_start(12)
+        tab.set_margin_end(12)
+
+        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
+        self.mode_once = Gtk.CheckButton(label="One-time downloading")
+        self.mode_daily = Gtk.CheckButton(label="Daily")
+        self.mode_daily.set_group(self.mode_once)
+        mode_row.append(self.mode_once)
+        mode_row.append(self.mode_daily)
+        tab.append(mode_row)
+
+        self.start_on_startup = Gtk.CheckButton(label="Start queue on UDownload startup")
+        tab.append(self.start_on_startup)
+
+        start_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.start_enabled = Gtk.CheckButton(label="Start queue at")
+        self.start_date = Gtk.Entry(width_chars=12)
+        self.start_date.set_placeholder_text("YYYY-MM-DD")
+        self.start_hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        self.start_minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        self.start_hour.set_width_chars(2)
+        self.start_minute.set_width_chars(2)
+        start_box.append(self.start_enabled)
+        start_box.append(self.start_date)
+        start_box.append(self.start_hour)
+        start_box.append(Gtk.Label(label=":"))
+        start_box.append(self.start_minute)
+        tab.append(start_box)
+
+        weekday_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        weekday_box.append(Gtk.Label(label="Days", xalign=0))
+        self.weekday_checks: list[Gtk.CheckButton] = []
+        for day in self.WEEKDAYS:
+            check = Gtk.CheckButton(label=day[:3])
+            self.weekday_checks.append(check)
+            weekday_box.append(check)
+        tab.append(weekday_box)
+
+        stop_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.stop_enabled = Gtk.CheckButton(label="Stop queue at")
+        self.stop_hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        self.stop_minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        self.stop_hour.set_width_chars(2)
+        self.stop_minute.set_width_chars(2)
+        stop_box.append(self.stop_enabled)
+        stop_box.append(self.stop_hour)
+        stop_box.append(Gtk.Label(label=":"))
+        stop_box.append(self.stop_minute)
+        tab.append(stop_box)
+
+        retry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.retry_enabled = Gtk.CheckButton(label="Number of retries for failed downloads")
+        self.retry_count = Gtk.SpinButton.new_with_range(0, 100, 1)
+        self.retry_count.set_value(3)
+        retry_box.append(self.retry_enabled)
+        retry_box.append(self.retry_count)
+        tab.append(retry_box)
+
+        open_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.open_when_done = Gtk.CheckButton(label="Open the following file when queue completes")
+        self.open_path = Gtk.Entry(hexpand=True)
+        browse_open = Gtk.Button(label="Browse…")
+        browse_open.connect("clicked", self._browse_completion_file)
+        open_box.append(self.open_when_done)
+        open_box.append(self.open_path)
+        open_box.append(browse_open)
+        tab.append(open_box)
+
+        self.exit_when_done = Gtk.CheckButton(label="Exit UDownload when queue completes")
+        self.shutdown_when_done = Gtk.CheckButton(label="Turn off computer when queue completes")
+        tab.append(self.exit_when_done)
+        tab.append(self.shutdown_when_done)
+
+        note = Gtk.Label(
+            label=(
+                "The computer shutdown option uses the normal system power-off action "
+                "and may require desktop authorization."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        note.add_css_class("dim-label")
+        tab.append(note)
+
+        self.notebook.append_page(tab, Gtk.Label(label="Schedule"))
+
+    def _build_files_tab(self) -> None:
+        tab = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        tab.set_margin_top(12)
+        tab.set_margin_bottom(12)
+        tab.set_margin_start(12)
+        tab.set_margin_end(12)
+
+        simultaneous = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        simultaneous.append(Gtk.Label(label="Download", xalign=0))
+        self.max_concurrent = Gtk.SpinButton.new_with_range(1, 20, 1)
+        simultaneous.append(self.max_concurrent)
+        simultaneous.append(Gtk.Label(label="files at the same time"))
+        tab.append(simultaneous)
+
+        header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        for text, width in [("File Name", 34), ("Size", 12), ("Status", 14), ("Time left", 12)]:
+            label = Gtk.Label(label=text, xalign=0, width_chars=width)
+            label.add_css_class("heading")
+            header.append(label)
+        tab.append(header)
+
+        self.files_list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.SINGLE)
+        files_scroll = Gtk.ScrolledWindow(vexpand=True)
+        files_scroll.set_child(self.files_list)
+        tab.append(files_scroll)
+
+        move_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        up_button = Gtk.Button(icon_name="go-up-symbolic")
+        down_button = Gtk.Button(icon_name="go-down-symbolic")
+        remove_button = Gtk.Button(icon_name="edit-delete-symbolic")
+        up_button.set_tooltip_text("Move up")
+        down_button.set_tooltip_text("Move down")
+        remove_button.set_tooltip_text("Remove from this queue")
+        up_button.connect("clicked", lambda *_: self._move_selected_file(-1))
+        down_button.connect("clicked", lambda *_: self._move_selected_file(1))
+        remove_button.connect("clicked", self._remove_selected_from_queue)
+        move_actions.append(up_button)
+        move_actions.append(down_button)
+        move_actions.append(remove_button)
+        tab.append(move_actions)
+
+        self.notebook.append_page(tab, Gtk.Label(label="Files in queue"))
+
+    def _scheduler_key(self, queue_name: str) -> str:
+        return f"scheduler.queue::{queue_name}"
+
+    def _default_config(self) -> dict[str, Any]:
+        now = dt.datetime.now()
+        return {
+            "mode": "once",
+            "start_on_startup": False,
+            "start_enabled": False,
+            "start_date": now.date().isoformat(),
+            "start_hour": now.hour,
+            "start_minute": now.minute,
+            "weekdays": [0, 1, 2, 3, 4, 5, 6],
+            "stop_enabled": False,
+            "stop_hour": 0,
+            "stop_minute": 0,
+            "retry_enabled": False,
+            "retry_count": 3,
+            "open_when_done": False,
+            "open_path": "",
+            "exit_when_done": False,
+            "shutdown_when_done": False,
+            "max_concurrent": int(self.settings.get("max_concurrent", 5)),
+            "order": [],
+            "run_active": False,
+            "completion_done": False,
+            "last_start_key": "",
+            "last_stop_key": "",
+            "retry_attempts": {},
+        }
+
+    def _config(self) -> dict[str, Any]:
+        value = self.settings.get(self._scheduler_key(self.current_queue), {})
+        config = self._default_config()
+        if isinstance(value, dict):
+            config.update(value)
+        return config
+
+    def _clear_listbox(self, listbox: Gtk.ListBox) -> None:
+        child = listbox.get_first_child()
+        while child is not None:
+            next_child = child.get_next_sibling()
+            listbox.remove(child)
+            child = next_child
+
+    def _reload_queues(self) -> None:
+        self._clear_listbox(self.queue_list)
+        rows = list(self.db.conn.execute(
+            "SELECT name FROM queues WHERE enabled=1 ORDER BY sort_order ASC, name ASC"
+        ))
+        if not rows:
+            self.db.conn.execute(
+                "INSERT OR IGNORE INTO queues(name,enabled,sort_order) VALUES('Main download queue',1,0)"
+            )
+            self.db.conn.commit()
+            rows = list(self.db.conn.execute(
+                "SELECT name FROM queues WHERE enabled=1 ORDER BY sort_order ASC, name ASC"
+            ))
+
+        for row in rows:
+            name = str(row["name"])
+            item = Gtk.ListBoxRow()
+            item.queue_name = name
+            item.set_child(Gtk.Label(label=name, xalign=0))
+            self.queue_list.append(item)
+
+    def _select_queue(self, name: str) -> None:
+        child = self.queue_list.get_first_child()
+        while child is not None:
+            if getattr(child, "queue_name", "") == name:
+                self.queue_list.select_row(child)
+                return
+            child = child.get_next_sibling()
+        first = self.queue_list.get_row_at_index(0)
+        if first:
+            self.queue_list.select_row(first)
+
+    def _queue_selected(self, _listbox, row) -> None:
+        if row is None:
+            return
+        self.current_queue = str(getattr(row, "queue_name", "Main download queue"))
+        self.queue_title.set_text(self.current_queue)
+        self._load_config()
+        self._refresh_files()
+
+    def _load_config(self) -> None:
+        self._loading = True
+        try:
+            config = self._config()
+            if config.get("mode") == "daily":
+                self.mode_daily.set_active(True)
+            else:
+                self.mode_once.set_active(True)
+
+            self.start_on_startup.set_active(bool(config.get("start_on_startup", False)))
+            self.start_enabled.set_active(bool(config.get("start_enabled", False)))
+            self.start_date.set_text(str(config.get("start_date", dt.date.today().isoformat())))
+            self.start_hour.set_value(int(config.get("start_hour", 0)))
+            self.start_minute.set_value(int(config.get("start_minute", 0)))
+
+            enabled_days = {int(value) for value in config.get("weekdays", [])}
+            for index, check in enumerate(self.weekday_checks):
+                check.set_active(index in enabled_days)
+
+            self.stop_enabled.set_active(bool(config.get("stop_enabled", False)))
+            self.stop_hour.set_value(int(config.get("stop_hour", 0)))
+            self.stop_minute.set_value(int(config.get("stop_minute", 0)))
+            self.retry_enabled.set_active(bool(config.get("retry_enabled", False)))
+            self.retry_count.set_value(int(config.get("retry_count", 3)))
+            self.open_when_done.set_active(bool(config.get("open_when_done", False)))
+            self.open_path.set_text(str(config.get("open_path", "")))
+            self.exit_when_done.set_active(bool(config.get("exit_when_done", False)))
+            self.shutdown_when_done.set_active(bool(config.get("shutdown_when_done", False)))
+            self.max_concurrent.set_value(int(config.get("max_concurrent", 5)))
+        finally:
+            self._loading = False
+
+    def _save_config(self) -> dict[str, Any]:
+        config = self._config()
+        config.update({
+            "mode": "daily" if self.mode_daily.get_active() else "once",
+            "start_on_startup": self.start_on_startup.get_active(),
+            "start_enabled": self.start_enabled.get_active(),
+            "start_date": self.start_date.get_text().strip() or dt.date.today().isoformat(),
+            "start_hour": self.start_hour.get_value_as_int(),
+            "start_minute": self.start_minute.get_value_as_int(),
+            "weekdays": [
+                index for index, check in enumerate(self.weekday_checks)
+                if check.get_active()
+            ],
+            "stop_enabled": self.stop_enabled.get_active(),
+            "stop_hour": self.stop_hour.get_value_as_int(),
+            "stop_minute": self.stop_minute.get_value_as_int(),
+            "retry_enabled": self.retry_enabled.get_active(),
+            "retry_count": self.retry_count.get_value_as_int(),
+            "open_when_done": self.open_when_done.get_active(),
+            "open_path": self.open_path.get_text().strip(),
+            "exit_when_done": self.exit_when_done.get_active(),
+            "shutdown_when_done": self.shutdown_when_done.get_active(),
+            "max_concurrent": self.max_concurrent.get_value_as_int(),
+        })
+        self.settings.set(self._scheduler_key(self.current_queue), config)
+        return config
+
+    def _apply(self, *_args) -> None:
+        self._save_config()
+        self.parent_window.status_label.set_text(
+            f"Scheduler settings saved for {self.current_queue}"
+        )
+
+    def _start_now(self, *_args) -> None:
+        self._save_config()
+        self.parent_window.start_scheduler_queue(self.current_queue)
+
+    def _stop_now(self, *_args) -> None:
+        self.parent_window.stop_scheduler_queue(self.current_queue)
+
+    def _browse_completion_file(self, *_args) -> None:
+        chooser = Gtk.FileChooserDialog(
+            title="Choose file to open when queue completes",
+            transient_for=self,
+            modal=True,
+            action=Gtk.FileChooserAction.OPEN,
+        )
+        chooser.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        chooser.add_button("Select", Gtk.ResponseType.ACCEPT)
+
+        def response(dialog, value: int) -> None:
+            if value == Gtk.ResponseType.ACCEPT:
+                file = dialog.get_file()
+                path = file.get_path() if file else None
+                if path:
+                    self.open_path.set_text(path)
+            dialog.destroy()
+
+        chooser.connect("response", response)
+        chooser.present()
+
+    def _refresh_files(self) -> None:
+        self._clear_listbox(self.files_list)
+        config = self._config()
+        rows = list(self.db.conn.execute(
+            "SELECT * FROM downloads WHERE queue_name=? AND status!='complete' ORDER BY id ASC",
+            (self.current_queue,),
+        ))
+
+        order = [int(value) for value in config.get("order", []) if str(value).isdigit()]
+        positions = {download_id: index for index, download_id in enumerate(order)}
+        rows.sort(key=lambda row: (positions.get(int(row["id"]), 10**9), int(row["id"])))
+
+        for row in rows:
+            item = DownloadObject(row)
+            list_row = Gtk.ListBoxRow()
+            list_row.download_id = item.db_id
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            name = Gtk.Label(label=item.file_name, xalign=0, width_chars=34, ellipsize=3)
+            size = Gtk.Label(label=item.size_text, xalign=0, width_chars=12)
+            status = Gtk.Label(label=item.status_text, xalign=0, width_chars=14)
+            eta = Gtk.Label(label=item.eta_text, xalign=0, width_chars=12)
+            box.append(name)
+            box.append(size)
+            box.append(status)
+            box.append(eta)
+            list_row.set_child(box)
+            self.files_list.append(list_row)
+
+    def _current_file_ids(self) -> list[int]:
+        ids: list[int] = []
+        row = self.files_list.get_first_child()
+        while row is not None:
+            download_id = getattr(row, "download_id", None)
+            if download_id is not None:
+                ids.append(int(download_id))
+            row = row.get_next_sibling()
+        return ids
+
+    def _move_selected_file(self, direction: int) -> None:
+        selected = self.files_list.get_selected_row()
+        if selected is None:
+            return
+        ids = self._current_file_ids()
+        download_id = int(getattr(selected, "download_id"))
+        try:
+            index = ids.index(download_id)
+        except ValueError:
+            return
+        target = index + direction
+        if target < 0 or target >= len(ids):
+            return
+        ids[index], ids[target] = ids[target], ids[index]
+        config = self._config()
+        config["order"] = ids
+        self.settings.set(self._scheduler_key(self.current_queue), config)
+        self._refresh_files()
+        row = self.files_list.get_row_at_index(target)
+        if row:
+            self.files_list.select_row(row)
+
+    def _remove_selected_from_queue(self, *_args) -> None:
+        selected = self.files_list.get_selected_row()
+        if selected is None:
+            return
+        if self.current_queue == "Main download queue":
+            self.parent_window.status_label.set_text(
+                "Items in the main queue cannot be removed from all queues"
+            )
+            return
+        download_id = int(getattr(selected, "download_id"))
+        self.db.conn.execute(
+            "UPDATE downloads SET queue_name='Main download queue' WHERE id=?",
+            (download_id,),
+        )
+        self.db.conn.commit()
+        self._refresh_files()
+        self.parent_window.load_rows()
+
+    def _new_queue(self, *_args) -> None:
+        dialog = Gtk.Dialog(title="New queue", transient_for=self, modal=True)
+        dialog.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("Create", Gtk.ResponseType.OK)
+        entry = Gtk.Entry(hexpand=True, placeholder_text="Queue name")
+        area = dialog.get_content_area()
+        area.set_margin_top(14)
+        area.set_margin_bottom(14)
+        area.set_margin_start(14)
+        area.set_margin_end(14)
+        area.append(entry)
+
+        def response(_dialog, value: int) -> None:
+            if value == Gtk.ResponseType.OK:
+                name = entry.get_text().strip()
+                if name:
+                    try:
+                        sort_order = int(self.db.conn.execute(
+                            "SELECT COALESCE(MAX(sort_order),0)+1 FROM queues"
+                        ).fetchone()[0])
+                        self.db.conn.execute(
+                            "INSERT INTO queues(name,enabled,sort_order) VALUES(?,1,?)",
+                            (name, sort_order),
+                        )
+                        self.db.conn.commit()
+                        self._reload_queues()
+                        self._select_queue(name)
+                    except Exception as exc:
+                        self.parent_window.status_label.set_text(
+                            f"Could not create queue: {exc}"
+                        )
+            dialog.destroy()
+
+        dialog.connect("response", response)
+        dialog.present()
+
+    def _delete_queue(self, *_args) -> None:
+        if self.current_queue == "Main download queue":
+            self.parent_window.status_label.set_text("The main download queue cannot be deleted")
+            return
+        name = self.current_queue
+        self.db.conn.execute(
+            "UPDATE downloads SET queue_name='Main download queue' WHERE queue_name=?",
+            (name,),
+        )
+        self.db.conn.execute("DELETE FROM queues WHERE name=?", (name,))
+        self.db.conn.commit()
+        self._reload_queues()
+        self._select_queue("Main download queue")
+        self.parent_window.load_rows()
+
+
 class DownloadPropertiesDialog(Gtk.Dialog):
     def __init__(self, parent: "MainWindow", item: DownloadObject, row: Any):
         super().__init__(title="File Properties", transient_for=parent, modal=True)
@@ -871,6 +1388,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.scroll_hold_until = 0.0
         self.column_width_save_source = 0
         self._restoring_layout = False
+        self._scheduler_startup_pending = True
         self.set_default_size(int(self.settings.get("window_width", 1180)), int(self.settings.get("window_height", 720)))
         self.set_icon_name("udownload")
         install_native_manifests()
@@ -1087,7 +1605,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.10",
+            version="1.0.11",
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -1595,9 +2113,276 @@ class MainWindow(Gtk.ApplicationWindow):
             self.db.conn.commit()
             self.status_label.set_text(f"Could not add download: {exc}")
 
+    def _scheduler_key(self, queue_name: str) -> str:
+        return f"scheduler.queue::{queue_name}"
+
+    def _scheduler_config(self, queue_name: str) -> dict[str, Any]:
+        value = self.settings.get(self._scheduler_key(queue_name), {})
+        return dict(value) if isinstance(value, dict) else {}
+
+    def _save_scheduler_config(self, queue_name: str, config: dict[str, Any]) -> None:
+        self.settings.set(self._scheduler_key(queue_name), config)
+
+    def _queue_rows(self, queue_name: str) -> list[Any]:
+        rows = list(self.db.conn.execute(
+            "SELECT * FROM downloads WHERE queue_name=? AND status!='complete' ORDER BY id ASC",
+            (queue_name,),
+        ))
+        config = self._scheduler_config(queue_name)
+        order = [int(value) for value in config.get("order", []) if str(value).isdigit()]
+        positions = {download_id: index for index, download_id in enumerate(order)}
+        rows.sort(key=lambda row: (positions.get(int(row["id"]), 10**9), int(row["id"])))
+        return rows
+
+    def start_scheduler_queue(self, queue_name: str) -> None:
+        config = self._scheduler_config(queue_name)
+        max_concurrent = max(
+            1,
+            int(config.get("max_concurrent", self.settings.get("max_concurrent", 5))),
+        )
+
+        try:
+            if not self.aria.ensure_running():
+                raise Aria2Error("Engine unavailable")
+            self.aria.call("changeGlobalOption", [{
+                "max-concurrent-downloads": str(max_concurrent),
+            }])
+        except Exception as exc:
+            self.status_label.set_text(f"Could not start scheduler queue: {exc}")
+            return
+
+        rows = self._queue_rows(queue_name)
+        started = 0
+        for row in rows:
+            status = str(row["status"] or "")
+            gid = str(row["gid"] or "")
+
+            if gid and status == "paused":
+                with contextlib.suppress(Exception):
+                    self.aria.resume(gid)
+                started += 1
+                continue
+
+            if gid and status in {"active", "waiting"}:
+                continue
+
+            if status == "error":
+                if gid:
+                    with contextlib.suppress(Exception):
+                        self.aria.remove(gid)
+                self.db.conn.execute(
+                    "UPDATE downloads SET gid=NULL,status='waiting',error_message='',start_time=NULL WHERE id=?",
+                    (int(row["id"]),),
+                )
+                self.db.conn.commit()
+            elif status == "scheduled":
+                self.db.conn.execute(
+                    "UPDATE downloads SET status='waiting',start_time=NULL WHERE id=?",
+                    (int(row["id"]),),
+                )
+                self.db.conn.commit()
+
+            fresh = self.db.get(int(row["id"]))
+            if fresh and not fresh["gid"] and str(fresh["status"]) in {"waiting", "error", "scheduled"}:
+                self._start_db_download(int(row["id"]))
+                started += 1
+
+        config["run_active"] = True
+        config["completion_done"] = False
+        config["retry_attempts"] = {}
+        self._save_scheduler_config(queue_name, config)
+        self.status_label.set_text(
+            f"Scheduler started {queue_name}: {started} item(s) submitted"
+        )
+
+    def stop_scheduler_queue(self, queue_name: str) -> None:
+        stopped = 0
+        for row in self._queue_rows(queue_name):
+            gid = str(row["gid"] or "")
+            if gid and str(row["status"]) in {"active", "waiting"}:
+                with contextlib.suppress(Exception):
+                    self.aria.pause(gid)
+                    stopped += 1
+        config = self._scheduler_config(queue_name)
+        config["run_active"] = False
+        self._save_scheduler_config(queue_name, config)
+        self.status_label.set_text(
+            f"Scheduler stopped {queue_name}: {stopped} item(s) paused"
+        )
+
+    def _scheduler_start_due(self, config: dict[str, Any], now: dt.datetime) -> bool:
+        if not bool(config.get("start_enabled", False)):
+            return False
+
+        hour = int(config.get("start_hour", 0))
+        minute = int(config.get("start_minute", 0))
+        scheduled_time = dt.time(hour=hour, minute=minute)
+        last_key = str(config.get("last_start_key", ""))
+
+        if str(config.get("mode", "once")) == "daily":
+            weekdays = {int(value) for value in config.get("weekdays", [])}
+            if now.weekday() not in weekdays:
+                return False
+            key = now.date().isoformat()
+            return now.time() >= scheduled_time and last_key != key
+
+        try:
+            date_value = dt.date.fromisoformat(str(config.get("start_date", "")))
+        except ValueError:
+            return False
+        scheduled = dt.datetime.combine(date_value, scheduled_time)
+        key = scheduled.isoformat(timespec="minutes")
+        return now >= scheduled and last_key != key
+
+    def _scheduler_stop_due(self, config: dict[str, Any], now: dt.datetime) -> bool:
+        if not bool(config.get("stop_enabled", False)):
+            return False
+        if not bool(config.get("run_active", False)):
+            return False
+        hour = int(config.get("stop_hour", 0))
+        minute = int(config.get("stop_minute", 0))
+        stop_time = dt.time(hour=hour, minute=minute)
+        key = now.date().isoformat()
+        return (
+            now.time() >= stop_time
+            and str(config.get("last_stop_key", "")) != key
+        )
+
+    def _retry_scheduler_errors(self, queue_name: str, config: dict[str, Any]) -> None:
+        if not bool(config.get("retry_enabled", False)):
+            return
+        limit = max(0, int(config.get("retry_count", 0)))
+        if limit <= 0:
+            return
+
+        attempts = dict(config.get("retry_attempts", {}) or {})
+        changed = False
+        error_rows = list(self.db.conn.execute(
+            "SELECT * FROM downloads WHERE queue_name=? AND status='error' ORDER BY id ASC",
+            (queue_name,),
+        ))
+
+        for row in error_rows:
+            key = str(int(row["id"]))
+            count = int(attempts.get(key, 0))
+            if count >= limit:
+                continue
+            gid = str(row["gid"] or "")
+            if gid:
+                with contextlib.suppress(Exception):
+                    self.aria.remove(gid)
+            self.db.conn.execute(
+                "UPDATE downloads SET gid=NULL,status='waiting',error_message='',start_time=NULL WHERE id=?",
+                (int(row["id"]),),
+            )
+            self.db.conn.commit()
+            attempts[key] = count + 1
+            changed = True
+            self._start_db_download(int(row["id"]))
+
+        if changed:
+            config["retry_attempts"] = attempts
+            self._save_scheduler_config(queue_name, config)
+
+    def _scheduler_completion_actions(
+        self,
+        queue_name: str,
+        config: dict[str, Any],
+    ) -> None:
+        if not bool(config.get("run_active", False)):
+            return
+        if bool(config.get("completion_done", False)):
+            return
+
+        unfinished = int(self.db.conn.execute(
+            "SELECT COUNT(*) FROM downloads WHERE queue_name=? AND status!='complete'",
+            (queue_name,),
+        ).fetchone()[0])
+        if unfinished > 0:
+            return
+
+        config["run_active"] = False
+        config["completion_done"] = True
+        self._save_scheduler_config(queue_name, config)
+
+        if bool(config.get("open_when_done", False)):
+            target = Path(str(config.get("open_path", "") or "")).expanduser()
+            if target.exists():
+                subprocess.Popen(
+                    ["xdg-open", str(target)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+        if bool(config.get("shutdown_when_done", False)):
+            subprocess.Popen(
+                ["systemctl", "poweroff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
+
+        if bool(config.get("exit_when_done", False)):
+            GLib.idle_add(lambda: (self.close(), GLib.SOURCE_REMOVE)[1])
+
     def run_scheduler(self) -> bool:
         for row in self.db.scheduled_due():
             self._start_db_download(int(row["id"]))
+
+        now = dt.datetime.now()
+        queue_rows = list(self.db.conn.execute(
+            "SELECT name FROM queues WHERE enabled=1 ORDER BY sort_order ASC, name ASC"
+        ))
+
+        for queue_row in queue_rows:
+            queue_name = str(queue_row["name"])
+            config = self._scheduler_config(queue_name)
+            if not config:
+                continue
+
+            if (
+                self._scheduler_startup_pending
+                and bool(config.get("start_on_startup", False))
+            ):
+                self.start_scheduler_queue(queue_name)
+                config = self._scheduler_config(queue_name)
+
+            if self._scheduler_start_due(config, now):
+                self.start_scheduler_queue(queue_name)
+                config = self._scheduler_config(queue_name)
+                if str(config.get("mode", "once")) == "daily":
+                    config["last_start_key"] = now.date().isoformat()
+                else:
+                    try:
+                        date_value = dt.date.fromisoformat(
+                            str(config.get("start_date", ""))
+                        )
+                        time_value = dt.time(
+                            int(config.get("start_hour", 0)),
+                            int(config.get("start_minute", 0)),
+                        )
+                        config["last_start_key"] = dt.datetime.combine(
+                            date_value,
+                            time_value,
+                        ).isoformat(timespec="minutes")
+                    except ValueError:
+                        config["last_start_key"] = now.isoformat(timespec="minutes")
+                self._save_scheduler_config(queue_name, config)
+
+            config = self._scheduler_config(queue_name)
+            if self._scheduler_stop_due(config, now):
+                self.stop_scheduler_queue(queue_name)
+                config = self._scheduler_config(queue_name)
+                config["last_stop_key"] = now.date().isoformat()
+                self._save_scheduler_config(queue_name, config)
+
+            config = self._scheduler_config(queue_name)
+            if bool(config.get("run_active", False)):
+                self._retry_scheduler_errors(queue_name, config)
+                config = self._scheduler_config(queue_name)
+                self._scheduler_completion_actions(queue_name, config)
+
+        self._scheduler_startup_pending = False
         return GLib.SOURCE_CONTINUE
 
     def pause_selected(self) -> None:
@@ -1817,8 +2602,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.status_label.set_text("Options saved")
 
     def show_scheduled(self) -> None:
-        self.current_category = "Unfinished"
-        self.load_rows()
+        SchedulerDialog(self).present()
 
     def handle_browser_message(self, message: dict[str, Any]) -> None:
         self.present()
