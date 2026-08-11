@@ -34,6 +34,8 @@ from core import (
     format_speed,
     install_native_manifests,
     launch_browser_extensions_page,
+    looks_like_placeholder_filename,
+    resolve_remote_file,
     safe_filename,
 )
 
@@ -141,10 +143,22 @@ class AddDownloadDialog(Gtk.Dialog):
         super().__init__(title="Download File Info", transient_for=parent, modal=True)
         self.set_default_size(620, 390)
         self.on_accept = on_accept
-        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
-        self.add_button("Download Later", Gtk.ResponseType.APPLY)
-        self.add_button("Start Download", Gtk.ResponseType.OK)
+        self.cancel_button = self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        self.later_button = self.add_button("Download Later", Gtk.ResponseType.APPLY)
+        self.start_button = self.add_button("Start Download", Gtk.ResponseType.OK)
         self.set_default_response(Gtk.ResponseType.OK)
+        self.initial = dict(initial)
+        self.filename_user_edited = False
+        self._updating_filename = False
+        self._resolved_filename_confident = bool(
+            initial.get("filename")
+            and not looks_like_placeholder_filename(
+                str(initial.get("filename") or ""),
+                str(initial.get("url") or ""),
+            )
+        )
+        self._resolve_token = 0
+        self._resolve_source_id = 0
 
         area = self.get_content_area()
         area.set_spacing(10)
@@ -161,6 +175,8 @@ class AddDownloadDialog(Gtk.Dialog):
         self.file_entry = Gtk.Entry(hexpand=True)
         filename = initial.get("filename") or safe_filename(initial.get("url", ""))
         self.file_entry.set_text(filename)
+        self.file_entry.connect("changed", self._on_filename_changed)
+        self.url_entry.connect("changed", self._on_url_changed)
         self.dir_entry = Gtk.Entry(hexpand=True)
         self.dir_entry.set_text(initial.get("save_dir", str(Path.home() / "Downloads")))
         self.dir_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, hexpand=True)
@@ -250,8 +266,110 @@ class AddDownloadDialog(Gtk.Dialog):
         )
         note.add_css_class("dim-label")
         grid.attach(note, 1, len(labels), 1, 1)
-        self.initial = initial
+
+        self.resolve_label = Gtk.Label(
+            label="",
+            wrap=True,
+            xalign=0,
+        )
+        self.resolve_label.add_css_class("dim-label")
+        grid.attach(self.resolve_label, 1, len(labels) + 1, 1, 1)
+
         self.connect("response", self._on_response)
+        if self.url_entry.get_text().strip():
+            self._schedule_resolve(delay_ms=50)
+
+    def _on_filename_changed(self, _entry: Gtk.Entry) -> None:
+        if not self._updating_filename:
+            self.filename_user_edited = True
+            self._resolved_filename_confident = True
+
+    def _on_url_changed(self, _entry: Gtk.Entry) -> None:
+        self.filename_user_edited = False
+        self._resolved_filename_confident = False
+        self._schedule_resolve(delay_ms=500)
+
+    def _schedule_resolve(self, delay_ms: int = 500) -> None:
+        self._resolve_token += 1
+        token = self._resolve_token
+        if self._resolve_source_id:
+            with contextlib.suppress(Exception):
+                GLib.source_remove(self._resolve_source_id)
+            self._resolve_source_id = 0
+
+        url = self.url_entry.get_text().strip()
+        if not url:
+            self.resolve_label.set_text("")
+            self.later_button.set_sensitive(True)
+            self.start_button.set_sensitive(True)
+            return
+
+        self.resolve_label.set_text("Resolving file information…")
+        self.later_button.set_sensitive(False)
+        self.start_button.set_sensitive(False)
+
+        def begin() -> bool:
+            self._resolve_source_id = 0
+            if token != self._resolve_token:
+                return GLib.SOURCE_REMOVE
+            current_url = self.url_entry.get_text().strip()
+            headers = dict(self.initial.get("headers", {}) or {})
+            source_page = str(self.initial.get("source_page", "") or "")
+
+            def worker() -> None:
+                info = resolve_remote_file(
+                    current_url,
+                    headers=headers,
+                    source_page=source_page,
+                )
+                GLib.idle_add(self._apply_resolved_info, token, current_url, info)
+
+            threading.Thread(target=worker, daemon=True).start()
+            return GLib.SOURCE_REMOVE
+
+        self._resolve_source_id = GLib.timeout_add(delay_ms, begin)
+
+    def _apply_resolved_info(self, token: int, requested_url: str, info: Any) -> bool:
+        if token != self._resolve_token:
+            return GLib.SOURCE_REMOVE
+        if requested_url != self.url_entry.get_text().strip():
+            return GLib.SOURCE_REMOVE
+
+        if info.filename and not self.filename_user_edited:
+            self._updating_filename = True
+            try:
+                self.file_entry.set_text(info.filename)
+            finally:
+                self._updating_filename = False
+
+            self._resolved_filename_confident = bool(info.filename_confident)
+            categories = [
+                "General", "Compressed", "Documents", "Music",
+                "Programs", "Video", "Images",
+            ]
+            detected = category_for_filename(info.filename)
+            with contextlib.suppress(ValueError):
+                self.category_combo.set_selected(categories.index(detected))
+
+        details: list[str] = []
+        if info.total_length:
+            details.append(format_bytes(info.total_length))
+        if info.content_type:
+            details.append(info.content_type)
+
+        if info.filename_confident:
+            prefix = "File information resolved"
+        elif info.error:
+            prefix = "Server metadata unavailable; aria2 will resolve the final filename"
+        else:
+            prefix = "Waiting for the final filename from aria2"
+
+        self.resolve_label.set_text(
+            prefix + (f" — {' · '.join(details)}" if details else "")
+        )
+        self.later_button.set_sensitive(True)
+        self.start_button.set_sensitive(True)
+        return GLib.SOURCE_REMOVE
 
     @staticmethod
     def _default_schedule_time() -> dt.datetime:
@@ -320,6 +438,9 @@ class AddDownloadDialog(Gtk.Dialog):
             "start_time": start_time,
             "headers": self.initial.get("headers", {}),
             "source_page": self.initial.get("source_page", ""),
+            "file_name_locked": bool(
+                self.filename_user_edited or self._resolved_filename_confident
+            ),
             "start_now": response == Gtk.ResponseType.OK,
         }
         self.on_accept(payload)
@@ -1051,6 +1172,7 @@ class MainWindow(Gtk.ApplicationWindow):
             start_time=data.get("start_time"),
             headers=data.get("headers", {}),
             source_page=data.get("source_page", ""),
+            file_name_locked=bool(data.get("file_name_locked", False)),
         )
         if data.get("start_now") and not data.get("start_time"):
             self._start_db_download(download_id)
@@ -1305,13 +1427,22 @@ class MainWindow(Gtk.ApplicationWindow):
             url = message.get("url", "")
             if not url:
                 return
-            headers = message.get("headers", {}) or {}
+            headers = dict(message.get("headers", {}) or {})
             cookies = message.get("cookies", "")
             if cookies:
                 headers["Cookie"] = cookies
+            user_agent = str(message.get("userAgent", "") or "").strip()
+            if user_agent and not any(key.casefold() == "user-agent" for key in headers):
+                headers["User-Agent"] = user_agent
+            browser_filename = str(message.get("filename", "") or "").strip()
+            initial_filename = browser_filename or safe_filename(url)
             initial = {
                 "url": url,
-                "filename": message.get("filename") or safe_filename(url),
+                "filename": initial_filename,
+                "filename_locked": bool(
+                    browser_filename
+                    and not looks_like_placeholder_filename(browser_filename, url)
+                ),
                 "save_dir": str(self.settings.get("download_dir")),
                 "headers": headers,
                 "source_page": message.get("pageUrl") or message.get("referrer", ""),
@@ -1321,6 +1452,7 @@ class MainWindow(Gtk.ApplicationWindow):
                 self.add_url_dialog(initial)
             else:
                 initial["category"] = category_for_filename(initial["filename"])
+                initial["file_name_locked"] = bool(initial.get("filename_locked", False))
                 initial["start_now"] = False
                 self.add_download(initial)
                 self.status_label.set_text("Added to queue — press Resume or Start Queue to download")
@@ -1417,6 +1549,13 @@ def main() -> int:
         assert category_for_filename("movie.mkv") == "Video"
         assert category_for_filename("archive.rar") == "Compressed"
         assert safe_filename("https://example.com/files/test%20file.zip") == "test file.zip"
+        assert looks_like_placeholder_filename(
+            "download", "https://example.com/download?id=123"
+        )
+        from core import filename_from_content_disposition
+        assert filename_from_content_disposition(
+            "attachment; filename*=UTF-8''Ubuntu%2026.04.iso"
+        ) == "Ubuntu 26.04.iso"
         db.conn.close()
         Path("/tmp/udownload-self-test.db").unlink(missing_ok=True)
         print("UDownload self-test: OK")

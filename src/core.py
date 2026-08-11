@@ -4,6 +4,8 @@ from __future__ import annotations
 import contextlib
 import datetime as dt
 import hashlib
+from email.message import Message
+from email.utils import collapse_rfc2231_value
 import json
 import mimetypes
 import os
@@ -100,6 +102,209 @@ def safe_filename(url: str, fallback: str = "download") -> str:
     return name or fallback
 
 
+def sanitize_filename(name: str) -> str:
+    value = str(name or "").strip()
+    value = Path(value.replace("\\", "/")).name.strip()
+    value = re.sub(r"[\x00-\x1f/\\:*?\"<>|]", "_", value)
+    return value.strip(" .")
+
+
+def filename_from_content_disposition(value: str) -> str:
+    if not value:
+        return ""
+
+    # Prefer RFC 5987 / RFC 6266 filename*= over the legacy filename= value.
+    match = re.search(r"(?:^|;)\s*filename\*\s*=\s*([^;]+)", value, flags=re.IGNORECASE)
+    if match:
+        raw = match.group(1).strip().strip('"')
+        try:
+            if "''" in raw:
+                charset, encoded = raw.split("''", 1)
+                decoded = urllib.parse.unquote(
+                    encoded,
+                    encoding=(charset or "utf-8"),
+                    errors="replace",
+                )
+            else:
+                decoded = urllib.parse.unquote(raw)
+            cleaned = sanitize_filename(decoded)
+            if cleaned:
+                return cleaned
+        except Exception:
+            pass
+
+    try:
+        message = Message()
+        message["content-disposition"] = value
+        filename = message.get_param("filename", header="content-disposition")
+        if isinstance(filename, tuple):
+            filename = collapse_rfc2231_value(filename)
+        cleaned = sanitize_filename(str(filename or ""))
+        if cleaned:
+            return cleaned
+    except Exception:
+        pass
+    return ""
+
+
+def looks_like_placeholder_filename(filename: str, url: str = "") -> bool:
+    cleaned = sanitize_filename(filename)
+    if not cleaned:
+        return True
+    if Path(cleaned).suffix:
+        return False
+    generic = {
+        "download", "file", "get", "attachment", "index", "fetch",
+        "downloadfile", "download_file",
+    }
+    if cleaned.casefold() in generic:
+        return True
+    if url and cleaned == safe_filename(url):
+        return True
+    # Automatically inferred extensionless names are not reliable enough to
+    # force as aria2's output filename.
+    return True
+
+
+@dataclass(slots=True)
+class RemoteFileInfo:
+    final_url: str
+    filename: str = ""
+    total_length: int = 0
+    content_type: str = ""
+    filename_source: str = ""
+    error: str = ""
+
+    @property
+    def filename_confident(self) -> bool:
+        if not self.filename:
+            return False
+        if self.filename_source == "content-disposition":
+            return True
+        return self.filename_source == "url" and not looks_like_placeholder_filename(
+            self.filename, self.final_url
+        )
+
+
+def _remote_total_length(headers: Any) -> int:
+    content_range = str(headers.get("Content-Range", "") or "")
+    match = re.search(r"/(\d+)\s*$", content_range)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    try:
+        return int(headers.get("Content-Length", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _remote_info_from_response(response: Any) -> RemoteFileInfo:
+    final_url = str(response.geturl() or "")
+    headers = response.headers
+    disposition_name = filename_from_content_disposition(
+        str(headers.get("Content-Disposition", "") or "")
+    )
+    if disposition_name:
+        filename = disposition_name
+        source = "content-disposition"
+    else:
+        filename = sanitize_filename(safe_filename(final_url, fallback=""))
+        source = "url" if filename else ""
+
+    return RemoteFileInfo(
+        final_url=final_url,
+        filename=filename,
+        total_length=_remote_total_length(headers),
+        content_type=str(headers.get("Content-Type", "") or "").split(";", 1)[0].strip(),
+        filename_source=source,
+    )
+
+
+def _merge_remote_info(primary: RemoteFileInfo, fallback: RemoteFileInfo) -> RemoteFileInfo:
+    filename = primary.filename or fallback.filename
+    filename_source = primary.filename_source or fallback.filename_source
+
+    if fallback.filename_source == "content-disposition" and primary.filename_source != "content-disposition":
+        filename = fallback.filename
+        filename_source = fallback.filename_source
+
+    return RemoteFileInfo(
+        final_url=primary.final_url or fallback.final_url,
+        filename=filename,
+        total_length=primary.total_length or fallback.total_length,
+        content_type=primary.content_type or fallback.content_type,
+        filename_source=filename_source,
+        error=primary.error or fallback.error,
+    )
+
+
+def resolve_remote_file(
+    url: str,
+    headers: dict[str, str] | None = None,
+    source_page: str = "",
+    head_timeout: float = 3.0,
+    get_timeout: float = 5.0,
+) -> RemoteFileInfo:
+    # Resolve redirects and metadata without downloading the whole file.
+    # HEAD is tried first. If metadata is incomplete, a GET request with
+    # Range: bytes=0-0 is opened and immediately closed after response headers.
+    url = str(url or "").strip()
+    fallback = RemoteFileInfo(
+        final_url=url,
+        filename=safe_filename(url),
+        filename_source="url",
+    )
+    if not url:
+        fallback.error = "Empty URL"
+        return fallback
+
+    request_headers = {
+        str(key): str(value)
+        for key, value in (headers or {}).items()
+        if key and value is not None and str(value) != ""
+    }
+    if source_page and not any(key.casefold() == "referer" for key in request_headers):
+        request_headers["Referer"] = source_page
+    if not any(key.casefold() == "accept-encoding" for key in request_headers):
+        request_headers["Accept-Encoding"] = "identity"
+
+    head_info: RemoteFileInfo | None = None
+    parsed = urllib.parse.urlsplit(url)
+
+    if parsed.scheme in {"http", "https"}:
+        try:
+            request = urllib.request.Request(url, headers=request_headers, method="HEAD")
+            with urllib.request.urlopen(request, timeout=head_timeout) as response:
+                head_info = _remote_info_from_response(response)
+        except Exception:
+            head_info = None
+
+    if (
+        head_info
+        and head_info.filename_source == "content-disposition"
+        and head_info.total_length > 0
+    ):
+        return _merge_remote_info(head_info, fallback)
+
+    get_headers = dict(request_headers)
+    if parsed.scheme in {"http", "https"}:
+        get_headers["Range"] = "bytes=0-0"
+
+    try:
+        request = urllib.request.Request(url, headers=get_headers, method="GET")
+        with urllib.request.urlopen(request, timeout=get_timeout) as response:
+            get_info = _remote_info_from_response(response)
+        if head_info:
+            return _merge_remote_info(get_info, _merge_remote_info(head_info, fallback))
+        return _merge_remote_info(get_info, fallback)
+    except Exception as exc:
+        result = _merge_remote_info(head_info, fallback) if head_info else fallback
+        result.error = str(exc)
+        return result
+
+
 def category_for_filename(filename: str) -> str:
     ext = Path(filename).suffix.lower().lstrip(".")
     for category, extensions in CATEGORY_EXTENSIONS.items():
@@ -189,6 +394,7 @@ class Database:
                 gid TEXT UNIQUE,
                 url TEXT NOT NULL,
                 file_name TEXT NOT NULL,
+                file_name_locked INTEGER NOT NULL DEFAULT 0,
                 save_dir TEXT NOT NULL,
                 category TEXT NOT NULL DEFAULT 'General',
                 description TEXT NOT NULL DEFAULT '',
@@ -218,6 +424,15 @@ class Database:
             INSERT OR IGNORE INTO queues(name,enabled,sort_order) VALUES('Main download queue',1,0);
             """
         )
+        columns = {
+            str(row["name"])
+            for row in self.conn.execute("PRAGMA table_info(downloads)")
+        }
+        if "file_name_locked" not in columns:
+            self.conn.execute(
+                "ALTER TABLE downloads "
+                "ADD COLUMN file_name_locked INTEGER NOT NULL DEFAULT 0"
+            )
         self.conn.commit()
 
     def add_download(
@@ -231,16 +446,21 @@ class Database:
         start_time: str | None = None,
         headers: dict[str, str] | None = None,
         source_page: str = "",
+        file_name_locked: bool = False,
     ) -> int:
         status = "scheduled" if start_time else "waiting"
         cur = self.conn.execute(
             """
-            INSERT INTO downloads(url,file_name,save_dir,category,description,queue_name,status,added_at,start_time,headers_json,source_page)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO downloads(
+                url,file_name,file_name_locked,save_dir,category,description,
+                queue_name,status,added_at,start_time,headers_json,source_page
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 url,
                 file_name,
+                1 if file_name_locked else 0,
                 save_dir,
                 category,
                 description,
@@ -263,10 +483,32 @@ class Database:
         status = state.get("status", "unknown")
         error = state.get("errorMessage", "")
         completed_at = dt.datetime.now().isoformat(timespec="seconds") if status == "complete" else None
+
+        actual_filename: str | None = None
+        actual_category: str | None = None
+        row = self.get_by_gid(gid)
+        if row is not None and not int(row["file_name_locked"] or 0):
+            files = state.get("files") or []
+            if files and isinstance(files, list):
+                first = files[0] or {}
+                path = first.get("path", "") if isinstance(first, dict) else ""
+                candidate = sanitize_filename(Path(str(path)).name) if path else ""
+                if candidate:
+                    actual_filename = candidate
+                    actual_category = category_for_filename(candidate)
+
         self.conn.execute(
             """
-            UPDATE downloads SET status=?,total_length=?,completed_length=?,download_speed=?,error_message=?,
-                completed_at=COALESCE(completed_at,?) WHERE gid=?
+            UPDATE downloads SET
+                status=?,
+                total_length=?,
+                completed_length=?,
+                download_speed=?,
+                error_message=?,
+                completed_at=COALESCE(completed_at,?),
+                file_name=COALESCE(?,file_name),
+                category=COALESCE(?,category)
+            WHERE gid=?
             """,
             (
                 status,
@@ -275,6 +517,8 @@ class Database:
                 int(state.get("downloadSpeed", 0) or 0),
                 error,
                 completed_at,
+                actual_filename,
+                actual_category,
                 gid,
             ),
         )
@@ -380,9 +624,8 @@ class Aria2Client:
 
     def add_uri(self, row: sqlite3.Row, settings: Settings) -> str:
         headers = json.loads(row["headers_json"] or "{}")
-        options: dict[str, str] = {
+        options: dict[str, Any] = {
             "dir": row["save_dir"],
-            "out": row["file_name"],
             "continue": "true",
             "split": str(settings.get("connections", 16)),
             "max-connection-per-server": str(settings.get("connections", 16)),
@@ -391,6 +634,10 @@ class Aria2Client:
             "allow-overwrite": "false",
             "summary-interval": "1",
         }
+        # Only force aria2's output name when the user explicitly chose it or
+        # the preflight resolver obtained a trustworthy remote filename.
+        if int(row["file_name_locked"] or 0):
+            options["out"] = row["file_name"]
         if row["source_page"]:
             options["referer"] = row["source_page"]
         if headers:

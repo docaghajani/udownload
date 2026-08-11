@@ -75,6 +75,7 @@ browser.menus.onClicked.addListener(async (info, tab) => {
                 url,
                 pageUrl: info.pageUrl || tab.url || "",
                 cookies: await cookieHeader(url),
+                userAgent: navigator.userAgent,
             });
         }
 
@@ -186,6 +187,7 @@ browser.downloads.onCreated.addListener(async item => {
             : "",
         referrer: item.referrer || "",
         cookies: await cookieHeader(url),
+        userAgent: navigator.userAgent,
         intercepted: true,
     });
 });

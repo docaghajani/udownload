@@ -31,6 +31,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.8" date="2026-08-11">
+      <description>
+        <p>Resolve indirect download metadata and preserve server-provided filenames.</p>
+      </description>
+    </release>
     <release version="1.0.7" date="2026-08-08"/>
   </releases>
 </component>

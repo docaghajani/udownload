@@ -82,7 +82,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "udm-link") {
     const url = info.linkUrl || info.srcUrl;
     if (!url) return;
-    await sendNative({action: "add_url", url, pageUrl: info.pageUrl || tab?.url || "", cookies: await cookieHeader(url)});
+    await sendNative({action: "add_url", url, pageUrl: info.pageUrl || tab?.url || "", cookies: await cookieHeader(url), userAgent: navigator.userAgent});
     return;
   }
   if (!tab?.id) return;
@@ -124,6 +124,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     filename: item.filename ? item.filename.split(/[\\/]/).pop() : "",
     referrer: item.referrer || "",
     cookies: await cookieHeader(url),
+    userAgent: navigator.userAgent,
     intercepted: true
   });
 });
