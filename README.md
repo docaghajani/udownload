@@ -198,18 +198,18 @@ udownload --version
 > Available Ubuntu series and current PPA builds are listed on
 > [Launchpad](https://launchpad.net/~iaghajani/+archive/ubuntu/udownload).
 
-### Test UDM 1.0.18 RC1 directly from GitHub
+### UDM 1.0.18 from GitHub
 
 ```bash
 cd ~
 
 git clone \
-  --branch v1.0.18-rc1 \
+  --branch v1.0.18 \
   --depth 1 \
   https://github.com/docaghajani/udownload.git \
-  udownload-1.0.18-rc1
+  udownload-1.0.18
 
-cd ~/udownload-1.0.18-rc1
+cd ~/udownload-1.0.18
 
 python3 -m py_compile \
   src/core.py \
@@ -225,7 +225,7 @@ To temporarily make this RC the `udownload` command while keeping the distro
 package installed:
 
 ```bash
-TESTDIR="$HOME/udownload-1.0.18-rc1"
+TESTDIR="$HOME/udownload-1.0.18"
 
 printf '#!/bin/sh\nexec /usr/bin/python3 "%s/src/udownload.py" "$@"\n' "$TESTDIR" \
   | sudo tee /usr/local/bin/udownload >/dev/null
@@ -485,7 +485,7 @@ predictable during real-world use.
 
 | Target | Status |
 |---|---|
-| GitHub 1.0.18 RC | 🟢 `v1.0.18-rc1` tag available |
+| GitHub release | 🟢 `v1.0.18` |
 | Ubuntu PPA | 🟢 Available |
 | Ubuntu 24.04 LTS (Noble) | 🟢 PPA build available |
 | Ubuntu development series | 🟢 PPA build available |
