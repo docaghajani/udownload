@@ -12,12 +12,14 @@
 </p>
 
 <p align="center">
-  <strong>Fast transfers · Native Linux UX · Reliable transfer control · Browser integration</strong>
+  <strong>Fast transfers · Native Linux UX · Browser integration · Remote control · CLI</strong>
 </p>
 
 <p align="center">
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-highlights">Highlights</a> •
+  <a href="#-command-line">Command Line</a> •
+  <a href="#-remote-downloads">Remote</a> •
   <a href="#-browser-integration">Browser Integration</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-packaging-status">Packaging</a> •
@@ -70,8 +72,8 @@ Queues, scheduling, categories, history and batch URL workflows.
 </td>
 <td width="33%" valign="top">
 
-### 🧩 Open
-Open-source, GPL-3.0-or-later and packaged for Debian/Ubuntu workflows.
+### 🌍 Remote
+Send downloads to another UDM machine securely over SSH.
 
 </td>
 </tr>
@@ -136,6 +138,31 @@ Open-source, GPL-3.0-or-later and packaged for Debian/Ubuntu workflows.
 
 </td>
 </tr>
+<tr>
+<td valign="top" width="50%">
+
+### Command line
+
+- Add downloads without opening the GUI
+- Start immediately with `--now`
+- Schedule with `--at`
+- Override destination with `--path`
+- Resolve a usable filename before database insertion
+
+</td>
+<td valign="top" width="50%">
+
+### Remote downloads
+
+- SSH-based remote control
+- Dedicated restricted Remote users
+- Hidden terminal password entry
+- SSH key support
+- Windows OpenSSH and PuTTY/Plink support
+- Default external port `8347`
+
+</td>
+</tr>
 </table>
 
 ---
@@ -162,8 +189,216 @@ Run the built-in self-test:
 udownload --self-test
 ```
 
+Check the application version:
+
+```bash
+udownload --version
+```
+
 > Available Ubuntu series and current PPA builds are listed on
 > [Launchpad](https://launchpad.net/~iaghajani/+archive/ubuntu/udownload).
+
+### Test UDM 1.0.18 RC1 directly from GitHub
+
+```bash
+cd ~
+
+git clone \
+  --branch v1.0.18-rc1 \
+  --depth 1 \
+  https://github.com/docaghajani/udownload.git \
+  udownload-1.0.18-rc1
+
+cd ~/udownload-1.0.18-rc1
+
+python3 -m py_compile \
+  src/core.py \
+  src/udownload.py \
+  src/remote_admin.py \
+  src/remote_command.py
+
+python3 src/udownload.py --self-test
+python3 src/udownload.py --version
+```
+
+To temporarily make this RC the `udownload` command while keeping the distro
+package installed:
+
+```bash
+TESTDIR="$HOME/udownload-1.0.18-rc1"
+
+printf '#!/bin/sh\nexec /usr/bin/python3 "%s/src/udownload.py" "$@"\n' "$TESTDIR" \
+  | sudo tee /usr/local/bin/udownload >/dev/null
+
+sudo chmod 755 /usr/local/bin/udownload
+hash -r
+
+command -v udownload
+udownload --version
+```
+
+To return to the packaged build:
+
+```bash
+sudo rm -f /usr/local/bin/udownload
+hash -r
+```
+
+---
+
+## ⌨️ Command Line
+
+UDM can add downloads directly from a terminal without opening the main window.
+
+Add a URL to the queue:
+
+```bash
+udownload add "https://example.com/file.iso"
+```
+
+Start immediately:
+
+```bash
+udownload add "https://example.com/file.iso" --now
+```
+
+Choose a destination directory:
+
+```bash
+udownload add "https://example.com/file.iso" \
+  --path "$HOME/Downloads/ISO" \
+  --now
+```
+
+Schedule a download:
+
+```bash
+udownload add "https://example.com/file.iso" \
+  --at "2026-08-13 22:30"
+```
+
+For CLI and Remote additions, UDM resolves a usable filename before inserting the
+download into the database. If the server and URL do not expose a usable filename,
+the command fails instead of creating a generic `download` entry.
+
+---
+
+## 🌍 Remote Downloads
+
+UDM 1.0.18 adds SSH-based Remote control. A download can be sent to a UDM machine
+from another computer while the actual transfer runs on the remote machine.
+
+### 1. Configure the UDM machine
+
+Open:
+
+```text
+UDM → Remote
+```
+
+Create a dedicated Remote username and password, for example:
+
+```text
+External port: 8347
+Remote user: usrudm
+Password: ********
+```
+
+UDM requests administrator authorization for the system setup.
+
+The Remote account is restricted to UDM download commands. It is not intended to
+provide a normal interactive shell. SSH forwarding, agent forwarding, X11, tunnels
+and TTY access are disabled for the restricted Remote group.
+
+The Remote password is handled by the normal Linux account mechanism and is not
+stored in the UDM settings database.
+
+### 2. Configure the router
+
+The default **external** Remote port is `8347`. Forward it to the target computer's
+normal SSH service:
+
+```text
+Internet TCP 8347
+        ↓
+Router / NAT
+        ↓
+UDM computer LAN IP : TCP 22
+```
+
+In router terminology:
+
+```text
+TCP 8347 → UDM computer LAN IP : 22
+```
+
+If a different external port is selected in UDM, forward that port to internal SSH
+port `22`.
+
+### 3. Send a download from another UDM installation
+
+```bash
+udownload remote "https://example.com/file.iso" \
+  --server 23.53.215.63 \
+  --user usrudm \
+  --now
+```
+
+Port `8347` is the default, so `--port` is optional.
+
+Override the port:
+
+```bash
+udownload remote "https://example.com/file.iso" \
+  --server 23.53.215.63 \
+  --port 9000 \
+  --user usrudm \
+  --now
+```
+
+When `--key` is not supplied, UDM launches the system OpenSSH client. OpenSSH asks
+for the password directly in the terminal with echo disabled, so the password is not
+shown while typing and is not placed in command history or process arguments.
+
+Use an SSH private key instead:
+
+```bash
+udownload remote "https://example.com/file.iso" \
+  --server 23.53.215.63 \
+  --user usrudm \
+  --key ~/.ssh/id_ed25519 \
+  --now
+```
+
+### 4. Send a download without UDM installed on the client
+
+Only an SSH client is required.
+
+Linux / macOS / OpenSSH:
+
+```bash
+ssh -p 8347 usrudm@23.53.215.63 \
+  'udownload add "https://example.com/file.iso" --now'
+```
+
+Windows Command Prompt / PowerShell with OpenSSH:
+
+```cmd
+ssh -p 8347 usrudm@23.53.215.63 "udownload add \"https://example.com/file.iso\" --now"
+```
+
+PuTTY / Plink:
+
+```cmd
+plink.exe -P 8347 -l usrudm 23.53.215.63 "udownload add \"https://example.com/file.iso\" --now"
+```
+
+The same Remote username/password works for both the UDM Remote command and direct
+SSH clients.
+
+Full setup and security details:
+
+**[Read the Remote Guide →](docs/REMOTE.md)**
 
 ---
 
@@ -194,30 +429,41 @@ Full setup guide:
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
-│                Chrome · Chromium · Firefox               │
+│          Chrome · Chromium · Firefox · Local CLI         │
 └──────────────────────────┬───────────────────────────────┘
-                           │ Native Messaging
+                           │ Native Messaging / CLI
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                         UDM                        │
+│                           UDM                            │
 │                 GTK4 + libadwaita desktop UI             │
 │                                                          │
-│  Queue · Scheduler · History · Categories · Dialogs      │
+│ Queue · Scheduler · History · Categories · Remote · CLI  │
 └──────────────────────────┬───────────────────────────────┘
                            │ aria2 RPC
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                           aria2                          │
+│                          aria2                           │
 │              High-performance transfer engine            │
 └──────────────────────────┬───────────────────────────────┘
                            │
                            ▼
                         Downloads
+
+Remote client
+     │
+     │ SSH / external TCP 8347
+     ▼
+Router / NAT
+     │ forwards to TCP 22
+     ▼
+Restricted UDM Remote account
+     │
+     └──────────────► UDM add command
 ```
 
 The UI and transfer engine are intentionally separated. aria2 handles network
 transfers while UDM manages desktop UX, state synchronization, scheduling,
-browser communication and file actions.
+browser communication, Remote authentication and file actions.
 
 ---
 
@@ -231,6 +477,7 @@ predictable during real-world use.
 - Resume continues the existing file instead of creating unnecessary duplicates.
 - Duplicate aria2 GIDs targeting the same destination are detected and stopped.
 - Transfer RPC work stays away from the GTK main thread so the UI remains responsive.
+- Active download rows continue updating while their context menu is open.
 
 ---
 
@@ -238,6 +485,7 @@ predictable during real-world use.
 
 | Target | Status |
 |---|---|
+| GitHub 1.0.18 RC | 🟢 `v1.0.18-rc1` tag available |
 | Ubuntu PPA | 🟢 Available |
 | Ubuntu 24.04 LTS (Noble) | 🟢 PPA build available |
 | Ubuntu development series | 🟢 PPA build available |
@@ -260,6 +508,8 @@ predictable during real-world use.
 ```text
 ✓ Python compilation checks
 ✓ Built-in UDM self-test
+✓ Remote command self-test
+✓ Remote administration self-test
 ✓ desktop-file validation
 ✓ AppStream metadata validation
 ✓ Debian Lintian
@@ -283,11 +533,15 @@ predictable during real-world use.
 </tr>
 <tr>
 <td><strong>Browser bridge</strong></td><td>Native Messaging</td>
-<td><strong>Packaging</strong></td><td>Debian / Ubuntu</td>
+<td><strong>Remote transport</strong></td><td>OpenSSH</td>
 </tr>
 <tr>
+<td><strong>Packaging</strong></td><td>Debian / Ubuntu</td>
 <td><strong>License</strong></td><td>GPL-3.0-or-later</td>
+</tr>
+<tr>
 <td><strong>App ID</strong></td><td><code>com.ideveloper.UDownload</code></td>
+<td><strong>Remote port</strong></td><td><code>8347</code> external → <code>22</code> internal</td>
 </tr>
 </table>
 
@@ -300,8 +554,8 @@ udownload/
 ├── bin/        Application launchers
 ├── browser/    Chrome / Chromium / Firefox integration
 ├── data/       Desktop files, icon and AppStream metadata
-├── docs/       Documentation
-├── src/        Application source
+├── docs/       Browser and Remote documentation
+├── src/        Application, CLI and Remote helpers
 └── systemd/    Service integration
 ```
 
@@ -335,8 +589,8 @@ See [COPYING](COPYING) for the complete license text.
 
 ## 👨‍💻 Author
 
-**AmirHossein Aghajani**
-GitHub: [@docaghajani](https://github.com/docaghajani)
+**AmirHossein Aghajani**  
+GitHub: [@docaghajani](https://github.com/docaghajani)  
 Email: `aghajani@dr.com`
 
 ---
