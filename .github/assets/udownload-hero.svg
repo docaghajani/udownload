@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">UDownload — Native Linux Download Manager</title>
+  <desc id="desc">UDownload hero banner for GitHub</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="52%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#1f2937"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#E95420"/>
+      <stop offset="48%" stop-color="#ff7a45"/>
+      <stop offset="100%" stop-color="#5e81ac"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="78%" cy="35%" r="55%">
+      <stop offset="0%" stop-color="#E95420" stop-opacity=".22"/>
+      <stop offset="100%" stop-color="#E95420" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000000" flood-opacity=".36"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="520" rx="28" fill="url(#bg)"/>
+  <rect width="1600" height="520" rx="28" fill="url(#glow)"/>
+
+  <!-- subtle grid -->
+  <g opacity=".07" stroke="#ffffff">
+    <path d="M0 92H1600M0 184H1600M0 276H1600M0 368H1600M0 460H1600"/>
+    <path d="M150 0V520M300 0V520M450 0V520M600 0V520M750 0V520M900 0V520M1050 0V520M1200 0V520M1350 0V520M1500 0V520"/>
+  </g>
+
+  <!-- logo tile -->
+  <g transform="translate(118 104)" filter="url(#shadow)">
+    <rect width="244" height="244" rx="58" fill="#111827" stroke="#ffffff" stroke-opacity=".13"/>
+    <circle cx="122" cy="122" r="82" fill="none" stroke="url(#accent)" stroke-width="17"/>
+    <path d="M122 68v96" stroke="#ffffff" stroke-width="18" stroke-linecap="round"/>
+    <path d="M84 130l38 38 38-38" fill="none" stroke="#ffffff" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M80 194h84" stroke="#ffffff" stroke-width="14" stroke-linecap="round"/>
+  </g>
+
+  <g transform="translate(430 105)">
+    <text x="0" y="76" fill="#ffffff" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="78" font-weight="800" letter-spacing="-2">UDownload</text>
+    <rect x="0" y="104" width="790" height="7" rx="3.5" fill="url(#accent)"/>
+    <text x="0" y="164" fill="#d1d5db" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="31" font-weight="500">Native download management for Linux</text>
+    <text x="0" y="214" fill="#9ca3af" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="24">GTK4 • libadwaita • aria2 • Browser Integration</text>
+
+    <!-- pills -->
+    <g transform="translate(0 264)" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="18" font-weight="700">
+      <rect width="184" height="52" rx="26" fill="#E95420"/>
+      <text x="92" y="33" text-anchor="middle" fill="#ffffff">Ubuntu PPA</text>
+      <g transform="translate(200 0)">
+        <rect width="198" height="52" rx="26" fill="#1f2937" stroke="#ffffff" stroke-opacity=".15"/>
+        <text x="99" y="33" text-anchor="middle" fill="#f3f4f6">Open Source</text>
+      </g>
+      <g transform="translate(414 0)">
+        <rect width="194" height="52" rx="26" fill="#1f2937" stroke="#ffffff" stroke-opacity=".15"/>
+        <text x="97" y="33" text-anchor="middle" fill="#f3f4f6">GPL-3.0+</text>
+      </g>
+      <g transform="translate(624 0)">
+        <rect width="220" height="52" rx="26" fill="#1f2937" stroke="#ffffff" stroke-opacity=".15"/>
+        <text x="110" y="33" text-anchor="middle" fill="#f3f4f6">Linux Native</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- decorative transfer lines -->
+  <g opacity=".52">
+    <circle cx="1392" cy="116" r="7" fill="#ff7a45"/>
+    <circle cx="1450" cy="178" r="5" fill="#5e81ac"/>
+    <circle cx="1360" cy="245" r="4" fill="#ffffff"/>
+    <path d="M1280 116h112M1338 178h112M1250 245h110" stroke="#ffffff" stroke-opacity=".2" stroke-width="2"/>
+  </g>
+
+  <text x="1490" y="474" text-anchor="end" fill="#6b7280" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="17">github.com/docaghajani/udownload</text>
+</svg>
