@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/udownload-hero.svg" alt="UDownload — Native Linux Download Manager" width="100%">
+  <img src=".github/assets/udownload-hero.svg" alt="Ubuntu Download Manager" width="100%">
 </p>
 
 <p align="center">
@@ -26,9 +26,9 @@
 
 ---
 
-## Why UDownload?
+## Why UDM?
 
-**UDownload** is a native GTK4/libadwaita download manager for Linux powered by the
+**UDM** is a native GTK4/libadwaita download manager for Linux powered by the
 high-performance **aria2** transfer engine.
 
 It is designed around a simple idea: advanced download management should feel like
@@ -169,7 +169,7 @@ udownload --self-test
 
 ## 🌐 Browser Integration
 
-UDownload can receive download requests directly from supported browsers through
+UDM can receive download requests directly from supported browsers through
 a Native Messaging bridge.
 
 | Browser | Integration |
@@ -199,7 +199,7 @@ Full setup guide:
                            │ Native Messaging
                            ▼
 ┌──────────────────────────────────────────────────────────┐
-│                         UDownload                        │
+│                         UDM                        │
 │                 GTK4 + libadwaita desktop UI             │
 │                                                          │
 │  Queue · Scheduler · History · Categories · Dialogs      │
@@ -216,14 +216,14 @@ Full setup guide:
 ```
 
 The UI and transfer engine are intentionally separated. aria2 handles network
-transfers while UDownload manages desktop UX, state synchronization, scheduling,
+transfers while UDM manages desktop UX, state synchronization, scheduling,
 browser communication and file actions.
 
 ---
 
 ## 🔐 Transfer Reliability
 
-UDownload adds transfer-state handling around aria2 to make desktop controls
+UDM adds transfer-state handling around aria2 to make desktop controls
 predictable during real-world use.
 
 - Pause and Cancel operate against the live transfer state.
@@ -259,7 +259,7 @@ predictable during real-world use.
 
 ```text
 ✓ Python compilation checks
-✓ Built-in UDownload self-test
+✓ Built-in UDM self-test
 ✓ desktop-file validation
 ✓ AppStream metadata validation
 ✓ Debian Lintian
@@ -326,7 +326,7 @@ Keep changes focused and submit them through a Pull Request.
 
 ## 📄 License
 
-UDownload is free and open-source software licensed under the
+UDM is free and open-source software licensed under the
 **GNU General Public License v3.0 or later**.
 
 See [COPYING](COPYING) for the complete license text.
@@ -342,7 +342,7 @@ Email: `aghajani@dr.com`
 ---
 
 <p align="center">
-  <strong>UDownload — Download better on Linux.</strong>
+  <strong>UDM — Download better on Linux.</strong>
 </p>
 
 <p align="center">
@@ -352,5 +352,5 @@ Email: `aghajani@dr.com`
 </p>
 
 <p align="center">
-  ⭐ If UDownload is useful to you, consider starring the repository.
+  ⭐ If UDM is useful to you, consider starring the repository.
 </p>

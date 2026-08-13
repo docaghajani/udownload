@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
-  <title id="title">UDownload — Native Linux Download Manager</title>
-  <desc id="desc">UDownload hero banner for GitHub</desc>
+  <title id="title">Ubuntu Download Manager</title>
+  <desc id="desc">Ubuntu Download Manager hero banner for GitHub</desc>
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#0b1220"/>
@@ -40,7 +40,7 @@
   </g>
 
   <g transform="translate(430 105)">
-    <text x="0" y="76" fill="#ffffff" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="78" font-weight="800" letter-spacing="-2">UDownload</text>
+    <text x="0" y="76" fill="#ffffff" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="54" font-weight="800" letter-spacing="-1.5">Ubuntu Download Manager</text>
     <rect x="0" y="104" width="790" height="7" rx="3.5" fill="url(#accent)"/>
     <text x="0" y="164" fill="#d1d5db" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="31" font-weight="500">Native download management for Linux</text>
     <text x="0" y="214" fill="#9ca3af" font-family="Inter,Segoe UI,Ubuntu,Arial,sans-serif" font-size="24">GTK4 • libadwaita • aria2 • Browser Integration</text>
