@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "name": "UDownload Integration",
-  "version": "1.0.17",
-  "description": "Send links and browser downloads to UDownload.",
+  "name": "UDM Integration",
+  "version": "1.0.18",
+  "description": "Send links and browser downloads to UDM.",
   "browser_specific_settings": {
     "gecko": {
       "id": "udownload@ideveloper.local",

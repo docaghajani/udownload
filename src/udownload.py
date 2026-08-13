@@ -1,13 +1,16 @@
 #!/usr/bin/python3
 from __future__ import annotations
+import re
 
 import argparse
 import base64
 import contextlib
 import datetime as dt
+import getpass
 import json
 import mimetypes
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -26,6 +29,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 from core import (
     APP_ID,
     APP_NAME,
+    APP_VERSION,
     Aria2Client,
     Aria2Error,
     Database,
@@ -37,6 +41,7 @@ from core import (
     install_native_manifests,
     launch_browser_extensions_page,
     looks_like_placeholder_filename,
+    probe_ssh_endpoint,
     resolve_remote_file,
     safe_filename,
     unique_path,
@@ -829,6 +834,286 @@ class OptionsDialog(Gtk.Dialog):
             self.on_save(values)
         self.destroy()
 
+
+class RemoteDialog(Gtk.Dialog):
+    def __init__(self, parent: Gtk.Window, settings: Settings):
+        super().__init__(title="Remote", transient_for=parent, modal=True)
+        self.parent_window = parent
+        self.settings = settings
+        self.owner_user = getpass.getuser()
+        self.set_default_size(650, 520)
+
+        self.add_button("Cancel", Gtk.ResponseType.CANCEL)
+        self.save_button = self.add_button(
+            "Create / Update User",
+            Gtk.ResponseType.OK,
+        )
+        self.save_button.set_sensitive(False)
+
+        area = self.get_content_area()
+        area.set_spacing(13)
+        area.set_margin_top(16)
+        area.set_margin_bottom(16)
+        area.set_margin_start(16)
+        area.set_margin_end(16)
+
+        intro = Gtk.Label(
+            label=(
+                "Create a dedicated Linux account for UDM Remote. "
+                "SSH authentication protects Remote access, and the account "
+                "is restricted to UDM download commands."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        intro.add_css_class("dim-label")
+        area.append(intro)
+
+        grid = Gtk.Grid(column_spacing=12, row_spacing=10)
+        area.append(grid)
+
+        self.port_spin = Gtk.SpinButton.new_with_range(1, 65535, 1)
+        self.port_spin.set_value(
+            int(settings.get("remote_port", 8347) or 8347)
+        )
+
+        self.user_entry = Gtk.Entry(
+            hexpand=True,
+            text=str(settings.get("remote_user", "usrudm") or "usrudm"),
+        )
+        self.user_entry.set_placeholder_text("usrudm")
+
+        self.password_entry = Gtk.Entry(hexpand=True)
+        self.password_entry.set_visibility(False)
+        self.password_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        self.password_entry.set_placeholder_text("At least 8 characters")
+
+        self.confirm_entry = Gtk.Entry(hexpand=True)
+        self.confirm_entry.set_visibility(False)
+        self.confirm_entry.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        self.confirm_entry.set_placeholder_text("Repeat password")
+
+        rows = [
+            ("External port", self.port_spin),
+            ("Remote user", self.user_entry),
+            ("Password", self.password_entry),
+            ("Confirm password", self.confirm_entry),
+        ]
+
+        for index, (caption, widget) in enumerate(rows):
+            grid.attach(
+                Gtk.Label(label=caption, xalign=0),
+                0, index, 1, 1,
+            )
+            grid.attach(widget, 1, index, 1, 1)
+
+        owner = Gtk.Label(
+            label=(
+                f"Downloads received through this Remote account are added "
+                f"to the UDM profile of: {self.owner_user}"
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        owner.add_css_class("dim-label")
+        area.append(owner)
+
+        password_note = Gtk.Label(
+            label=(
+                "The password is not saved in UDM settings. "
+                "Linux stores the account password hash in its normal system "
+                "password database."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        password_note.add_css_class("dim-label")
+        area.append(password_note)
+
+        self.router_note = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        self.router_note.add_css_class("dim-label")
+        area.append(self.router_note)
+
+        self.examples = Gtk.Label(xalign=0, wrap=True, selectable=True)
+        self.examples.add_css_class("dim-label")
+        area.append(self.examples)
+
+        self.status = Gtk.Label(
+            label="Enter a username and matching password to create Remote access.",
+            xalign=0,
+            wrap=True,
+        )
+        area.append(self.status)
+
+        self.user_entry.connect("changed", self._changed)
+        self.password_entry.connect("changed", self._changed)
+        self.confirm_entry.connect("changed", self._changed)
+        self.port_spin.connect("value-changed", self._changed)
+        self.connect("response", self._response)
+
+        self._changed()
+
+    def _changed(self, *_args) -> None:
+        username = self.user_entry.get_text().strip()
+        password = self.password_entry.get_text()
+        confirm = self.confirm_entry.get_text()
+        port = int(self.port_spin.get_value())
+
+        valid_user = bool(
+            re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", username)
+        )
+        valid_password = (
+            len(password) >= 8
+            and password == confirm
+        )
+
+        self.save_button.set_sensitive(
+            valid_user and valid_password
+        )
+
+        self.router_note.set_text(
+            "Router / firewall:\n"
+            f"Forward TCP {port} on your router to this computer's LAN IP, "
+            "destination/internal port 22. Allow OpenSSH Server through the "
+            "computer firewall."
+        )
+
+        shown_user = username or "usrudm"
+        self.examples.set_text(
+            "From a computer with UDM installed:\n"
+            f'udownload remote "https://example.com/file.iso" '
+            f'--server PUBLIC_IP --user {shown_user} --now\n\n'
+            "From any computer with an SSH client:\n"
+            f'ssh -p {port} {shown_user}@PUBLIC_IP '
+            f'\'udownload add "https://example.com/file.iso" --now\''
+        )
+
+        if password and password != confirm:
+            self.status.set_text("Passwords do not match.")
+        elif password and len(password) < 8:
+            self.status.set_text("Password must be at least 8 characters.")
+        elif username and not valid_user:
+            self.status.set_text(
+                "Username: lowercase letters, numbers, _ or - only."
+            )
+        else:
+            self.status.set_text(
+                "The first setup may request administrator authorization."
+            )
+
+    def _response(self, _dialog, response: int) -> None:
+        if response != Gtk.ResponseType.OK:
+            self.destroy()
+            return
+
+        if not self.save_button.get_sensitive():
+            return
+
+        self._configure_remote_user()
+
+    def _configure_remote_user(self) -> None:
+        helper = Path(__file__).with_name("remote_admin.py")
+        if not helper.is_file():
+            self.status.set_text(
+                f"Remote administration helper not found: {helper}"
+            )
+            return
+
+        username = self.user_entry.get_text().strip()
+        password = self.password_entry.get_text()
+        port = int(self.port_spin.get_value())
+
+        payload = {
+            "username": username,
+            "password": password,
+            "owner": self.owner_user,
+            "external_port": port,
+        }
+
+        self.save_button.set_sensitive(False)
+        self.status.set_text(
+            "Configuring Remote access... "
+            "Administrator authorization may be requested."
+        )
+
+        def worker() -> None:
+            command = [
+                "/usr/bin/pkexec",
+                "/usr/bin/python3",
+                str(helper),
+            ]
+
+            try:
+                result = subprocess.run(
+                    command,
+                    input=json.dumps(payload),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+
+                message = ""
+                ok = False
+
+                for line in reversed(result.stdout.splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        response = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ok = bool(response.get("ok"))
+                    message = str(response.get("message", "") or "")
+                    break
+
+                if not message:
+                    if result.returncode == 126:
+                        message = "Administrator authorization was cancelled."
+                    else:
+                        message = (
+                            result.stderr.strip()
+                            or result.stdout.strip()
+                            or f"Remote setup failed with code {result.returncode}"
+                        )
+
+                GLib.idle_add(
+                    self._configure_done,
+                    ok and result.returncode == 0,
+                    message,
+                    username,
+                    port,
+                )
+            except Exception as exc:
+                GLib.idle_add(
+                    self._configure_done,
+                    False,
+                    str(exc),
+                    username,
+                    port,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _configure_done(
+        self,
+        ok: bool,
+        message: str,
+        username: str,
+        port: int,
+    ) -> bool:
+        if ok:
+            self.settings.set("remote_user", username)
+            self.settings.set("remote_port", port)
+            self.password_entry.set_text("")
+            self.confirm_entry.set_text("")
+            self.status.set_text(message)
+        else:
+            self.status.set_text(message)
+            self._changed()
+
+        return GLib.SOURCE_REMOVE
 
 class BrowserIntegrationDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window):
@@ -2119,7 +2404,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._build_ui()
         self.connect("close-request", self._on_close)
         GLib.idle_add(self._start_engine)
-        GLib.timeout_add_seconds(2, self.refresh)
+        GLib.timeout_add_seconds(1, self.refresh)
         GLib.timeout_add_seconds(20, self.run_scheduler)
 
     def _build_ui(self) -> None:
@@ -2141,6 +2426,7 @@ class MainWindow(Gtk.ApplicationWindow):
         menu.append("Import Links from TXT…", "win.import-links")
         menu.append("Export Unfinished Links…", "win.export-links")
         menu.append("Browser Integration", "win.browser")
+        menu.append("Remote", "win.remote")
         menu.append("Open Downloads Folder", "win.open-downloads")
         menu.append("About", "win.about")
         menu_btn.set_menu_model(menu)
@@ -2164,6 +2450,7 @@ class MainWindow(Gtk.ApplicationWindow):
             ("Delete", "user-trash-symbolic", self.delete_selected),
             ("Delete Completed", "edit-clear-all-symbolic", self.delete_completed),
             ("Options", "emblem-system-symbolic", self.options_dialog),
+            ("Remote", "network-wired-symbolic", lambda: RemoteDialog(self, self.settings).present()),
             ("Scheduler", "alarm-symbolic", self.show_scheduled),
             ("Start Queue", "view-list-symbolic", self.resume_all),
             ("Stop Queue", "process-stop-symbolic", self.pause_all),
@@ -2316,6 +2603,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "import-links": self.import_links_from_txt,
             "export-links": self.export_unfinished_links,
             "browser": lambda *_: BrowserIntegrationDialog(self).present(),
+            "remote": lambda *_: RemoteDialog(self, self.settings).present(),
             "open-downloads": lambda *_: subprocess.Popen(["xdg-open", str(self.settings.get("download_dir"))]),
             "about": self._about,
         }
@@ -2329,7 +2617,7 @@ class MainWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name=APP_NAME,
             application_icon="udownload",
-            version="1.0.17",
+            version=APP_VERSION,
             developer_name="امیرحسین آقاجانی",
             developers=["امیرحسین آقاجانی <aghajani@dr.com>"],
             comments="A native Ubuntu download manager with segmented downloads, queues, scheduling and browser integration.",
@@ -2713,13 +3001,29 @@ class MainWindow(Gtk.ApplicationWindow):
         add("Properties", lambda: self.show_properties(item))
 
         popover.set_child(menu_box)
+
+        # Keep the popover attached to a stable widget. Active rows are
+        # replaced during live refreshes, but the ColumnView itself persists.
         widget = gesture.get_widget()
-        popover.set_parent(widget)
+        anchor = self.column_view
+        popover.set_parent(anchor)
+
         rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
+        translated = False
+        with contextlib.suppress(Exception):
+            translated, bounds = widget.compute_bounds(anchor)
+            if translated:
+                rect.x = int(bounds.get_x())
+                rect.y = int(bounds.get_y())
+                rect.width = max(1, int(bounds.get_width()))
+                rect.height = max(1, int(bounds.get_height()))
+
+        if not translated:
+            rect.x = 0
+            rect.y = 0
+            rect.width = 1
+            rect.height = 1
+
         popover.set_pointing_to(rect)
 
         def cleanup(_popover) -> None:
@@ -2728,6 +3032,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         popover.connect("closed", cleanup)
         popover.popup()
+
 
     def _on_download_scroll(self, _adjustment) -> None:
         # While the user is actively scrolling, do not mutate the visible
@@ -3488,7 +3793,6 @@ class MainWindow(Gtk.ApplicationWindow):
 
         # Accept normal Notepad-style files with one URL per line, while also
         # finding multiple URLs on the same line. Preserve input order.
-        import re
         candidates = re.findall(r"(?:https?|ftp)://[^\s<>\"']+", text, flags=re.IGNORECASE)
         urls: list[str] = []
         seen: set[str] = set()
@@ -3666,6 +3970,336 @@ class MainWindow(Gtk.ApplicationWindow):
         GLib.idle_add(start_next, priority=GLib.PRIORITY_DEFAULT_IDLE)
 
 
+def _cli_url(positional: str | None, link: str | None) -> str:
+    value = str(positional or link or "").strip()
+    if not value:
+        raise ValueError("A download URL is required")
+
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() not in {"http", "https", "ftp"}:
+        raise ValueError("URL must start with http://, https:// or ftp://")
+    return value
+
+
+def _cli_schedule(value: str | None) -> str | None:
+    if not value:
+        return None
+
+    try:
+        parsed = dt.datetime.fromisoformat(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(
+            "--at must look like '2026-08-13 22:30'"
+        ) from exc
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+
+    parsed = parsed.replace(second=0, microsecond=0)
+    if parsed <= dt.datetime.now():
+        raise ValueError("--at must be in the future")
+
+    return parsed.isoformat(timespec="seconds")
+
+
+def _cli_resolve_filename(
+    url: str,
+    timeout: float = 20.0,
+) -> tuple[str, bool]:
+    """Resolve a usable filename before inserting a CLI download."""
+    fallback = safe_filename(url)
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    last_error = ""
+
+    while time.monotonic() < deadline:
+        remaining = max(1.0, deadline - time.monotonic())
+        info = resolve_remote_file(
+            url,
+            head_timeout=min(4.0, remaining),
+            get_timeout=min(7.0, remaining),
+        )
+
+        last_error = str(info.error or "").strip()
+        candidate = str(info.filename or "").strip()
+        final_url = str(info.final_url or url)
+
+        if candidate and not looks_like_placeholder_filename(
+            candidate,
+            final_url,
+        ):
+            return candidate, bool(info.filename_confident)
+
+        if fallback and not looks_like_placeholder_filename(
+            fallback,
+            url,
+        ):
+            return fallback, True
+
+        if time.monotonic() >= deadline:
+            break
+
+        time.sleep(0.75)
+
+    detail = (
+        f" Last resolver error: {last_error}"
+        if last_error
+        else ""
+    )
+    raise ValueError(
+        "Could not determine the remote filename within "
+        f"{int(timeout)} seconds."
+        + detail
+    )
+
+def _cli_add_local(
+    url: str,
+    path: str | None,
+    start_now: bool,
+    at: str | None,
+) -> int:
+    db = Database()
+    try:
+        settings = Settings(db)
+        directory = Path(
+            path or str(settings.get("download_dir"))
+        ).expanduser()
+        directory.mkdir(parents=True, exist_ok=True)
+
+        print("Resolving file information...", flush=True)
+        filename, filename_locked = _cli_resolve_filename(url)
+        print(f"Resolved filename: {filename}", flush=True)
+        start_time = _cli_schedule(at)
+
+        download_id = db.add_download(
+            url=url,
+            file_name=filename,
+            save_dir=str(directory),
+            category=category_for_filename(filename),
+            start_time=start_time,
+            file_name_locked=filename_locked,
+        )
+
+        if start_now:
+            aria = Aria2Client()
+            if not aria.ensure_running():
+                db.conn.execute(
+                    "UPDATE downloads "
+                    "SET status='error',error_message=? "
+                    "WHERE id=?",
+                    ("aria2 engine unavailable", download_id),
+                )
+                db.conn.commit()
+                print("Could not start aria2", file=sys.stderr)
+                return 4
+
+            row = db.get(download_id)
+            if row is None:
+                print("Download record disappeared", file=sys.stderr)
+                return 5
+
+            try:
+                gid = aria.add_uri(row, settings)
+                db.set_gid(download_id, gid)
+            except Exception as exc:
+                db.conn.execute(
+                    "UPDATE downloads "
+                    "SET status='error',error_message=? "
+                    "WHERE id=?",
+                    (str(exc), download_id),
+                )
+                db.conn.commit()
+                print(
+                    f"Could not start download: {exc}",
+                    file=sys.stderr,
+                )
+                return 4
+
+            print(f"Started download #{download_id}: {filename}")
+            return 0
+
+        if start_time:
+            print(
+                f"Scheduled download #{download_id} "
+                f"for {start_time}: {filename}"
+            )
+        else:
+            print(f"Added to queue #{download_id}: {filename}")
+        return 0
+    finally:
+        db.conn.close()
+
+
+def _cli_remote(
+    url: str,
+    server: str,
+    port: int,
+    user: str,
+    key: str,
+    path: str | None,
+    start_now: bool,
+    at: str | None,
+) -> int:
+    server = str(server or "").strip()
+    if not server:
+        print("--server is required", file=sys.stderr)
+        return 2
+
+    if not 1 <= int(port) <= 65535:
+        print("--port must be between 1 and 65535", file=sys.stderr)
+        return 2
+
+    ok, detail = probe_ssh_endpoint(server, int(port), timeout=2.5)
+    if not ok:
+        print(detail, file=sys.stderr)
+        return 3
+
+    ssh = shutil.which("ssh")
+    if not ssh:
+        print(
+            "ssh was not found. Install openssh-client first.",
+            file=sys.stderr,
+        )
+        return 3
+
+    normalized_at = _cli_schedule(at)
+    target = f"{user}@{server}" if user else server
+
+    remote_args = ["udownload", "add", url]
+    if start_now:
+        remote_args.append("--now")
+    if normalized_at:
+        remote_args.extend(["--at", normalized_at])
+    if path:
+        remote_args.extend(["--path", path])
+
+    remote_command = " ".join(
+        shlex.quote(part) for part in remote_args
+    )
+
+    command = [
+        ssh,
+        "-p",
+        str(port),
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+    ]
+
+    if key:
+        command.extend([
+            "-i",
+            str(Path(key).expanduser()),
+            "-o",
+            "IdentitiesOnly=yes",
+        ])
+    else:
+        # Let OpenSSH read the password directly from the terminal.
+        # OpenSSH disables terminal echo while the password is typed,
+        # so the password never appears in command history or argv.
+        command.extend([
+            "-o",
+            "PreferredAuthentications=keyboard-interactive,password",
+            "-o",
+            "PubkeyAuthentication=no",
+            "-o",
+            "NumberOfPasswordPrompts=3",
+        ])
+
+    command.extend([target, remote_command])
+
+    print(f"Remote SSH: {target}:{port}")
+    result = subprocess.run(command, check=False)
+    return int(result.returncode)
+
+
+def _handle_headless_cli(argv: list[str]) -> int | None:
+    if len(argv) < 2 or argv[1] not in {"add", "remote"}:
+        return None
+
+    parser = argparse.ArgumentParser(
+        prog="udownload",
+        description="UDM command-line download control",
+    )
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+    )
+
+    add_parser = subparsers.add_parser(
+        "add",
+        help="Add a link on this machine",
+    )
+    add_parser.add_argument("url", nargs="?")
+    add_parser.add_argument("--link", dest="link")
+    add_parser.add_argument("--path")
+    add_mode = add_parser.add_mutually_exclusive_group()
+    add_mode.add_argument(
+        "--now",
+        action="store_true",
+        help="Start immediately",
+    )
+    add_mode.add_argument(
+        "--at",
+        help="Schedule, e.g. '2026-08-13 22:30'",
+    )
+
+    remote_parser = subparsers.add_parser(
+        "remote",
+        help="Add a link to another UDM machine over SSH",
+    )
+    remote_parser.add_argument("url", nargs="?")
+    remote_parser.add_argument("--link", dest="link")
+    remote_parser.add_argument("--server", required=True)
+    remote_parser.add_argument(
+        "--port",
+        type=int,
+        default=8347,
+        help="SSH/NAT port (default: 8347)",
+    )
+    remote_parser.add_argument(
+        "--user",
+        required=True,
+        help="Remote UDM SSH username",
+    )
+    remote_parser.add_argument("--key", default="")
+    remote_parser.add_argument("--path")
+    remote_mode = remote_parser.add_mutually_exclusive_group()
+    remote_mode.add_argument(
+        "--now",
+        action="store_true",
+        help="Start immediately on the remote machine",
+    )
+    remote_mode.add_argument(
+        "--at",
+        help="Schedule on the remote machine",
+    )
+
+    args = parser.parse_args(argv[1:])
+    try:
+        url = _cli_url(args.url, args.link)
+        if args.command == "add":
+            return _cli_add_local(
+                url=url,
+                path=args.path,
+                start_now=bool(args.now),
+                at=args.at,
+            )
+
+        return _cli_remote(
+            url=url,
+            server=args.server,
+            port=args.port,
+            user=args.user,
+            key=args.key,
+            path=args.path,
+            start_now=bool(args.now),
+            at=args.at,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
 class UDMApplication(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
@@ -3704,6 +4338,14 @@ class UDMApplication(Adw.Application):
 
 
 def main() -> int:
+    if "--version" in sys.argv:
+        print(f"UDM {APP_VERSION}")
+        return 0
+
+    cli_result = _handle_headless_cli(sys.argv)
+    if cli_result is not None:
+        return cli_result
+
     if "--self-test" in sys.argv:
         db = Database(Path("/tmp/udownload-self-test.db"))
         assert category_for_filename("movie.mkv") == "Video"

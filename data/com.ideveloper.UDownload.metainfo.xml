@@ -31,6 +31,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.18" date="2026-08-13">
+      <description>
+        <p>Add SSH Remote control and local CLI commands, resolve filenames before CLI insertion, and keep active-row context menus open during live refreshes.</p>
+      </description>
+    </release>
     <release version="1.0.17" date="2026-08-11">
       <description>
         <p>Move progress actions into the dialog footer and remove the redundant Close button.</p>

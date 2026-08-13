@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import shlex
+import socket
 import sqlite3
 import subprocess
 import time
@@ -22,6 +23,7 @@ from typing import Any, Iterable
 
 APP_ID = "com.ideveloper.UDownload"
 APP_NAME = "Ubuntu Download Manager"
+APP_VERSION = "1.0.18"
 CONFIG_DIR = Path.home() / ".config" / "udownload"
 DATA_DIR = Path.home() / ".local" / "share" / "udownload"
 LEGACY_CONFIG_DIR = Path.home() / ".config" / "udm"
@@ -95,6 +97,51 @@ def format_eta(total: int, completed: int, speed: int) -> str:
     days, hours = divmod(hours, 24)
     return f"{days}d {hours}h"
 
+
+def probe_ssh_endpoint(
+    host: str,
+    port: int,
+    timeout: float = 2.0,
+) -> tuple[bool, str]:
+    host = str(host or "").strip()
+
+    if not host:
+        return False, "Server address is required"
+
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return False, "Port must be a number"
+
+    if not 1 <= port <= 65535:
+        return False, "Port must be between 1 and 65535"
+
+    try:
+        with socket.create_connection(
+            (host, port),
+            timeout=timeout,
+        ) as sock:
+            sock.settimeout(timeout)
+            banner = sock.recv(192).decode(
+                "utf-8",
+                errors="replace",
+            ).strip()
+    except Exception as exc:
+        return False, f"Cannot connect to {host}:{port}: {exc}"
+
+    if banner.startswith("SSH-"):
+        return True, banner
+
+    if banner:
+        return (
+            False,
+            f"Port {port} is open, but it is not SSH ({banner[:80]})",
+        )
+
+    return (
+        False,
+        f"Port {port} accepted a connection but sent no SSH banner",
+    )
 
 def safe_filename(url: str, fallback: str = "download") -> str:
     parsed = urllib.parse.urlsplit(url)
@@ -347,6 +394,9 @@ class Settings:
         "show_download_complete_dialog": True,
         "confirm_delete": True,
         "browser_prompt": True,
+        "remote_server": "",
+        "remote_port": 8347,
+        "remote_user": "",
         "auto_start_aria2": True,
         "window_width": 1180,
         "window_height": 720,

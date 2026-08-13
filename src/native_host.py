@@ -34,7 +34,7 @@ def main() -> int:
         send_message({"ok": False, "error": "Invalid native message"})
         return 1
     if message.get("action") == "ping":
-        send_message({"ok": True, "version": "1.0.17"})
+        send_message({"ok": True, "version": "1.0.18"})
         return 0
     payload = base64.urlsafe_b64encode(json.dumps(message, ensure_ascii=False).encode()).decode()
     try:
