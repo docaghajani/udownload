@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/docaghajani/udownload/releases/latest"><img src="https://img.shields.io/github/v/release/docaghajani/udownload?style=flat-square&label=release&logo=github" alt="Latest release"></a>
+  <a href="https://github.com/docaghajani/udownload/releases/latest"><img src="https://img.shields.io/badge/release-v1.2.0-2ea44f?style=flat-square&logo=github" alt="Latest release"></a>
   <a href="COPYING"><img src="https://img.shields.io/github/license/docaghajani/udownload?style=flat-square" alt="License"></a>
   <a href="https://launchpad.net/~iaghajani/+archive/ubuntu/udownload"><img src="https://img.shields.io/badge/Ubuntu-PPA-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu PPA"></a>
   <img src="https://img.shields.io/badge/GTK-4-4A86CF?style=flat-square&logo=gnome&logoColor=white" alt="GTK4">
@@ -270,7 +270,7 @@ git clone \
   https://github.com/docaghajani/udownload.git \
   udownload-1.2.0
 
-cd ~/udownload-1.0.19
+cd ~/udownload-1.2.0
 
 python3 -m py_compile \
   src/core.py \
@@ -288,7 +288,7 @@ To temporarily make this release the `udownload` command while keeping the distr
 package installed:
 
 ```bash
-TESTDIR="$HOME/udownload-1.0.19"
+TESTDIR="$HOME/udownload-1.2.0"
 
 printf '#!/bin/sh\nexec /usr/bin/python3 "%s/src/udownload.py" "$@"\n' "$TESTDIR" \
   | sudo tee /usr/local/bin/udownload >/dev/null
