@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#-udm-1019">UDM 1.0.19</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-highlights">Highlights</a> •
   <a href="#-command-line">Command Line</a> •
@@ -26,6 +27,29 @@
   <a href="#-packaging-status">Packaging</a> •
   <a href="#-contributing">Contributing</a>
 </p>
+
+---
+
+## 🆕 UDM 1.0.19
+
+**UDM 1.0.19** adds the new optional **Web UI** while keeping the native GTK4
+desktop workflow, CLI, SSH Remote control and browser integration intact.
+
+### What's new in 1.0.19
+
+- Optional Web UI controlled directly from **UDM → Options**.
+- `Enable Web UI (trusted LAN / VPN)` switch.
+- Configurable Web UI port, defaulting to `8600`.
+- Open the same UDM queue from a browser using `http://SERVER_IP:PORT/`.
+- Add, queue and schedule downloads from the browser.
+- Live progress, transfer rate, ETA and status in the Web UI.
+- Pause, resume, start and remove queue entries from the browser.
+- Desktop and Web UI share the same UDM database and aria2 transfer engine.
+- Web UI self-test and JavaScript syntax checks added to the release checks.
+
+> The Web UI in 1.0.19 is intended for a **trusted LAN or VPN**. It does not
+> include a public-facing login screen, so the Web UI port should not be exposed
+> directly to the public Internet.
 
 ---
 
@@ -215,9 +239,11 @@ cd ~/udownload-1.0.19
 python3 -m py_compile \
   src/core.py \
   src/udownload.py \
+  src/web_server.py \
   src/remote_admin.py \
   src/remote_command.py
 
+python3 src/web_server.py --self-test
 python3 src/udownload.py --self-test
 python3 src/udownload.py --version
 ```
@@ -539,6 +565,8 @@ predictable during real-world use.
 ```text
 ✓ Python compilation checks
 ✓ Built-in UDM self-test
+✓ Web UI self-test
+✓ JavaScript syntax check
 ✓ Remote command self-test
 ✓ Remote administration self-test
 ✓ desktop-file validation
@@ -567,6 +595,10 @@ predictable during real-world use.
 <td><strong>Remote transport</strong></td><td>OpenSSH</td>
 </tr>
 <tr>
+<td><strong>Web UI</strong></td><td>Browser + local HTTP service</td>
+<td><strong>Web UI port</strong></td><td><code>8600</code> default, configurable</td>
+</tr>
+<tr>
 <td><strong>Packaging</strong></td><td>Debian / Ubuntu</td>
 <td><strong>License</strong></td><td>GPL-3.0-or-later</td>
 </tr>
@@ -585,8 +617,9 @@ udownload/
 ├── bin/        Application launchers
 ├── browser/    Chrome / Chromium / Firefox integration
 ├── data/       Desktop files, icon and AppStream metadata
-├── docs/       Browser and Remote documentation
-├── src/        Application, CLI and Remote helpers
+├── docs/       Browser, Remote, Web UI and release documentation
+├── src/        Application, CLI, Remote and Web UI backend
+├── web/        Web UI HTML, JavaScript and CSS
 └── systemd/    Service integration
 ```
 
@@ -623,6 +656,53 @@ See [COPYING](COPYING) for the complete license text.
 **AmirHossein Aghajani**  
 GitHub: [@docaghajani](https://github.com/docaghajani)  
 Email: `aghajani@dr.com`
+
+---
+
+## 🌐 Web UI Option — UDM 1.0.19
+
+The Web UI is **disabled by default**. Users who only want the normal GTK desktop
+application do not need to enable or configure it.
+
+Open:
+
+```text
+UDM → Options
+```
+
+Configure these two settings:
+
+```text
+Enable Web UI (trusted LAN / VPN): ON
+Web UI port: 8600
+```
+
+Press **Save**. UDM starts the Web UI listener on the selected port.
+
+From another computer, phone or tablet on the same trusted LAN/VPN, open:
+
+```text
+http://SERVER_IP:8600/
+```
+
+Replace `SERVER_IP` with the IP address of the computer running UDM. If you select
+another port in Options, use that port in the browser URL.
+
+The Web UI controls the **same UDM download queue** as the desktop application.
+Downloads added from the browser are stored in the same UDM database and transferred
+through the same aria2 engine. The browser view can add, queue and schedule downloads,
+show live progress, transfer rate, ETA and status, and pause, resume, start or remove
+queue entries.
+
+To disable browser access:
+
+```text
+UDM → Options → Enable Web UI (trusted LAN / VPN): OFF → Save
+```
+
+> **Security:** UDM 1.0.19 Web UI is designed for a trusted LAN or VPN. This
+> release does not include a public-facing login screen. Do not forward the Web UI
+> port directly from the public Internet.
 
 ---
 
