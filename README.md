@@ -40,6 +40,7 @@ desktop workflow, CLI, SSH Remote control and browser integration intact.
 - Optional Web UI controlled directly from **UDM → Options**.
 - `Enable Web UI (trusted LAN / VPN)` switch.
 - Configurable Web UI port, defaulting to `8600`.
+- CLI control for Web UI enable, disable, status and port.
 - Open the same UDM queue from a browser using `http://SERVER_IP:PORT/`.
 - Add, queue and schedule downloads from the browser.
 - Live progress, transfer rate, ETA and status in the Web UI.
@@ -678,6 +679,28 @@ Web UI port: 8600
 ```
 
 Press **Save**. UDM starts the Web UI listener on the selected port.
+
+### CLI control
+
+The same Web UI setting can be managed without opening Options:
+
+```bash
+# Show the current saved state and port
+udownload web status
+
+# Enable using the saved/default port
+udownload web enable
+
+# Enable and set the port at the same time
+udownload web enable --port 8600
+
+# Disable the Web UI
+udownload web disable
+```
+
+When the UDM desktop application is already running, CLI changes are detected and
+applied within a few seconds. If UDM is not running, the setting is persisted and
+takes effect on the next start.
 
 From another computer, phone or tablet on the same trusted LAN/VPN, open:
 

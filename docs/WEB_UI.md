@@ -24,6 +24,21 @@ Then open the server from another device on the same trusted network:
 http://SERVER_IP:8600/
 ```
 
+## Command line
+
+The Web UI can also be enabled, disabled and inspected from the terminal:
+
+```bash
+udownload web status
+udownload web enable
+udownload web enable --port 8600
+udownload web disable
+```
+
+If the desktop application is already running, it detects the changed setting and
+starts, stops or restarts the Web UI within a few seconds. Otherwise the setting is
+saved and takes effect on the next UDM start.
+
 ## Features
 
 - Add a URL and start it immediately.

@@ -2421,6 +2421,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.settings = Settings(self.db)
         self.aria = Aria2Client()
         self.web_server: WebUIServer | None = None
+        self._web_settings_snapshot: tuple[bool, int] | None = None
         self.current_category = str(self.settings.get("current_category", "All Downloads"))
         self.search_text = ""
         self.refresh_busy = False
@@ -2437,6 +2438,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.connect("close-request", self._on_close)
         GLib.idle_add(self._start_engine)
         GLib.idle_add(self._sync_web_server)
+        GLib.timeout_add_seconds(2, self._watch_web_settings)
         GLib.timeout_add_seconds(1, self.refresh)
         GLib.timeout_add_seconds(20, self.run_scheduler)
 
@@ -3921,6 +3923,18 @@ class MainWindow(Gtk.ApplicationWindow):
             with contextlib.suppress(Exception):
                 server.stop()
 
+    def _watch_web_settings(self) -> bool:
+        enabled = bool(self.settings.get("web_enabled", False))
+        try:
+            port = int(self.settings.get("web_port", 8600) or 8600)
+        except (TypeError, ValueError):
+            port = 8600
+
+        state = (enabled, port)
+        if state != self._web_settings_snapshot:
+            self._sync_web_server()
+        return GLib.SOURCE_CONTINUE
+
     def _sync_web_server(self) -> bool:
         enabled = bool(self.settings.get("web_enabled", False))
         try:
@@ -3931,6 +3945,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if not 1024 <= port <= 65535:
             port = 8600
             self.settings.set("web_port", port)
+
+        self._web_settings_snapshot = (enabled, port)
 
         if not enabled:
             was_running = self.web_server is not None
@@ -4297,8 +4313,63 @@ def _cli_remote(
     return int(result.returncode)
 
 
+
+def _cli_web(action: str, port: int | None = None) -> int:
+    db = Database()
+    try:
+        settings = Settings(db)
+
+        try:
+            current_port = int(settings.get("web_port", 8600) or 8600)
+        except (TypeError, ValueError):
+            current_port = 8600
+
+        if action == "status":
+            enabled = bool(settings.get("web_enabled", False))
+            print(f"Web UI: {'enabled' if enabled else 'disabled'}")
+            print(f"Port: {current_port}")
+            if enabled:
+                print(f"URL: http://SERVER_IP:{current_port}/")
+            return 0
+
+        if action == "enable":
+            if port is not None:
+                if not 1024 <= int(port) <= 65535:
+                    print(
+                        "--port must be between 1024 and 65535",
+                        file=sys.stderr,
+                    )
+                    return 2
+                current_port = int(port)
+                settings.set("web_port", current_port)
+
+            settings.set("web_enabled", True)
+            print("Web UI enabled")
+            print(f"Port: {current_port}")
+            print(f"URL: http://SERVER_IP:{current_port}/")
+            print(
+                "If UDM is running, the change is applied within a few seconds; "
+                "otherwise it applies on the next UDM start."
+            )
+            return 0
+
+        if action == "disable":
+            settings.set("web_enabled", False)
+            print("Web UI disabled")
+            print(
+                "If UDM is running, the listener stops within a few seconds; "
+                "otherwise the setting is saved for the next UDM start."
+            )
+            return 0
+
+        print(f"Unknown Web UI action: {action}", file=sys.stderr)
+        return 2
+    finally:
+        db.conn.close()
+
+
 def _handle_headless_cli(argv: list[str]) -> int | None:
-    if len(argv) < 2 or argv[1] not in {"add", "remote"}:
+    if len(argv) < 2 or argv[1] not in {"add", "remote", "web"}:
         return None
 
     parser = argparse.ArgumentParser(
@@ -4359,8 +4430,40 @@ def _handle_headless_cli(argv: list[str]) -> int | None:
         help="Schedule on the remote machine",
     )
 
+    web_parser = subparsers.add_parser(
+        "web",
+        help="Control the UDM Web UI",
+    )
+    web_commands = web_parser.add_subparsers(
+        dest="web_action",
+        required=True,
+    )
+    web_enable = web_commands.add_parser(
+        "enable",
+        help="Enable the Web UI",
+    )
+    web_enable.add_argument(
+        "--port",
+        type=int,
+        help="Set the Web UI port while enabling it",
+    )
+    web_commands.add_parser(
+        "disable",
+        help="Disable the Web UI",
+    )
+    web_commands.add_parser(
+        "status",
+        help="Show the saved Web UI state and port",
+    )
+
     args = parser.parse_args(argv[1:])
     try:
+        if args.command == "web":
+            return _cli_web(
+                action=args.web_action,
+                port=getattr(args, "port", None),
+            )
+
         url = _cli_url(args.url, args.link)
         if args.command == "add":
             return _cli_add_local(

@@ -33,7 +33,7 @@
   <releases>
     <release version="1.0.19" date="2026-08-15">
       <description>
-        <p>Add an optional browser-based Web UI with configurable port, live queue control, and LAN/VPN access managed from UDM Options.</p>
+        <p>Add an optional browser-based Web UI with configurable port, live queue control, and LAN/VPN access managed from UDM Options or the command line.</p>
       </description>
     </release>
     <release version="1.0.18" date="2026-08-13">
