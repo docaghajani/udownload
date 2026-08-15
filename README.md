@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#-udm-120">UDM 1.2.0</a> •
   <a href="#-udm-1019">UDM 1.0.19</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-highlights">Highlights</a> •
@@ -27,6 +28,40 @@
   <a href="#-packaging-status">Packaging</a> •
   <a href="#-contributing">Contributing</a>
 </p>
+
+---
+
+## 🆕 UDM 1.2.0
+
+UDM 1.2.0 adds authentication to the Web UI.
+
+- The root Web UI URL always opens a sign-in page.
+- Username and password are configured in **UDM → Options**.
+- Passwords are stored only as salted PBKDF2-HMAC-SHA256 hashes.
+- Web sessions are in-memory and use an `HttpOnly`, `SameSite=Strict` browser-session cookie.
+- Inactive sessions expire automatically.
+- Changing credentials invalidates existing sessions.
+- Repeated failed sign-ins are rate-limited.
+- The Web UI now has an explicit **Log out** action.
+- CLI credential setup is available without putting the password in command history:
+
+```bash
+udownload web auth --user admin
+udownload web status
+udownload web enable --port 8600
+udownload web disable
+```
+
+For local testing of this source checkout:
+
+```bash
+cd ~/Projects/udownload
+python3 src/udownload.py --version
+python3 src/web_server.py --self-test
+python3 src/udownload.py
+```
+
+**[Read the Web UI authentication guide →](docs/WEB_UI.md)**
 
 ---
 
@@ -224,16 +259,16 @@ udownload --version
 > Available Ubuntu series and current PPA builds are listed on
 > [Launchpad](https://launchpad.net/~iaghajani/+archive/ubuntu/udownload).
 
-### UDM 1.0.19 from GitHub
+### UDM 1.2.0 from GitHub
 
 ```bash
 cd ~
 
 git clone \
-  --branch v1.0.19 \
+  --branch v1.2.0 \
   --depth 1 \
   https://github.com/docaghajani/udownload.git \
-  udownload-1.0.19
+  udownload-1.2.0
 
 cd ~/udownload-1.0.19
 
@@ -433,28 +468,41 @@ Full setup and security details:
 
 ## 🖥️ Web UI
 
-UDM 1.0.19 can expose the current UDM download queue through a browser on a
-trusted LAN or VPN.
+UDM 1.2.0 provides a password-protected browser interface for the same download
+queue and aria2 engine used by the GTK desktop application.
 
-Enable it from:
+Configure it in:
 
 ```text
-UDM → Options → Enable Web UI (trusted LAN / VPN)
+UDM → Options
 ```
 
-Choose the Web UI port (default `8600`), save, and open:
+Set a **Web UI username**, **Web UI password**, listening port, and enable the Web
+UI. Then open:
 
 ```text
 http://SERVER_IP:8600/
 ```
 
-The browser view uses the same UDM database and aria2 engine as the desktop app.
-It can add, queue and schedule downloads, show live progress, and pause, resume,
-start or remove queue entries.
+The root URL displays the UDM sign-in screen. After authentication, the browser can
+add, queue and schedule downloads, show live progress, and pause, resume, start or
+remove queue entries.
 
-> **Security:** the 1.0.19 Web UI is for trusted LAN/VPN use. Do not forward its
-> port directly to the public Internet; this release does not include a
-> public-facing login screen.
+The password is not stored in plaintext. UDM stores a salted PBKDF2-HMAC-SHA256
+hash. Sessions are kept only in server memory and use a non-persistent HttpOnly
+browser-session cookie.
+
+CLI configuration is also available:
+
+```bash
+udownload web auth --user admin
+udownload web status
+udownload web enable --port 8600
+udownload web disable
+```
+
+> The built-in Web UI still uses HTTP. Use it on a trusted LAN/VPN, or place it
+> behind an HTTPS reverse proxy for wider network access.
 
 **[Read the Web UI Guide →](docs/WEB_UI.md)**
 
@@ -543,7 +591,7 @@ predictable during real-world use.
 
 | Target | Status |
 |---|---|
-| GitHub release | 🟢 `v1.0.19` |
+| GitHub release | 🟢 `v1.2.0` |
 | Ubuntu PPA | 🟢 Available |
 | Ubuntu 24.04 LTS (Noble) | 🟢 PPA build available |
 | Ubuntu development series | 🟢 PPA build available |
@@ -660,10 +708,7 @@ Email: `aghajani@dr.com`
 
 ---
 
-## 🌐 Web UI Option — UDM 1.0.19
-
-The Web UI is **disabled by default**. Users who only want the normal GTK desktop
-application do not need to enable or configure it.
+## 🌐 Web UI Option — UDM 1.2.0
 
 Open:
 
@@ -671,61 +716,44 @@ Open:
 UDM → Options
 ```
 
-Configure these two settings:
+Configure:
 
 ```text
-Enable Web UI (trusted LAN / VPN): ON
+Enable Web UI: ON
 Web UI port: 8600
+Web UI username: your username
+Web UI password: your password
 ```
 
-Press **Save**. UDM starts the Web UI listener on the selected port.
+A password is required before the Web UI can be enabled. If credentials already
+exist, leaving the password field blank keeps the current password hash.
 
-### CLI control
-
-The same Web UI setting can be managed without opening Options:
+The equivalent terminal setup is:
 
 ```bash
-# Show the current saved state and port
-udownload web status
-
-# Enable using the saved/default port
-udownload web enable
-
-# Enable and set the port at the same time
+udownload web auth --user admin
 udownload web enable --port 8600
-
-# Disable the Web UI
-udownload web disable
+udownload web status
 ```
 
-When the UDM desktop application is already running, CLI changes are detected and
-applied within a few seconds. If UDM is not running, the setting is persisted and
-takes effect on the next start.
+The password prompt is hidden and the password is never placed in shell history or
+process arguments.
 
-From another computer, phone or tablet on the same trusted LAN/VPN, open:
+Open:
 
 ```text
 http://SERVER_IP:8600/
 ```
 
-Replace `SERVER_IP` with the IP address of the computer running UDM. If you select
-another port in Options, use that port in the browser URL.
+The login page is shown at the root URL. Use **Log out** in the Web UI when finished.
 
-The Web UI controls the **same UDM download queue** as the desktop application.
-Downloads added from the browser are stored in the same UDM database and transferred
-through the same aria2 engine. The browser view can add, queue and schedule downloads,
-show live progress, transfer rate, ETA and status, and pause, resume, start or remove
-queue entries.
+To disable:
 
-To disable browser access:
-
-```text
-UDM → Options → Enable Web UI (trusted LAN / VPN): OFF → Save
+```bash
+udownload web disable
 ```
 
-> **Security:** UDM 1.0.19 Web UI is designed for a trusted LAN or VPN. This
-> release does not include a public-facing login screen. Do not forward the Web UI
-> port directly from the public Internet.
+or turn off **Enable Web UI** in UDM Options.
 
 ---
 

@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
+import secrets
 import contextlib
 import datetime as dt
 import json
 import socket
 import threading
 import time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,6 +36,57 @@ from core import (
 
 DEFAULT_PORT = 8600
 MAX_BODY_BYTES = 64 * 1024
+WEB_PASSWORD_ITERATIONS = 390_000
+WEB_SESSION_TTL_SECONDS = 30 * 60
+WEB_LOGIN_WINDOW_SECONDS = 60
+WEB_LOGIN_MAX_FAILURES = 5
+
+
+def hash_web_password(password: str) -> str:
+    value = str(password or "")
+    if len(value) < 8:
+        raise ValueError("Web UI password must be at least 8 characters")
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        value.encode("utf-8"),
+        salt,
+        WEB_PASSWORD_ITERATIONS,
+    )
+    return (
+        "pbkdf2_sha256$"
+        f"{WEB_PASSWORD_ITERATIONS}$"
+        f"{base64.b64encode(salt).decode('ascii')}$"
+        f"{base64.b64encode(digest).decode('ascii')}"
+    )
+
+
+def verify_web_password(password: str, encoded: str) -> bool:
+    try:
+        scheme, rounds_text, salt_text, digest_text = str(encoded or "").split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        rounds = int(rounds_text)
+        if rounds < 100_000 or rounds > 2_000_000:
+            return False
+        salt = base64.b64decode(salt_text.encode("ascii"), validate=True)
+        expected = base64.b64decode(digest_text.encode("ascii"), validate=True)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            str(password or "").encode("utf-8"),
+            salt,
+            rounds,
+        )
+        return hmac.compare_digest(actual, expected)
+    except Exception:
+        return False
+
+
+def _web_auth_fingerprint(username: str, password_hash: str) -> str:
+    return hashlib.sha256(
+        (str(username) + "\0" + str(password_hash)).encode("utf-8")
+    ).hexdigest()
+
 CATEGORY_TABS = ["All Downloads", "Unfinished", "Finished"]
 STATUS_ALIASES = {
     "waiting": "queued",
@@ -343,6 +399,21 @@ def make_handler(
     service: WebDownloadService,
     static_dir: Path,
 ) -> type[BaseHTTPRequestHandler]:
+    sessions: dict[str, dict[str, Any]] = {}
+    sessions_lock = threading.RLock()
+    failed_logins: dict[str, list[float]] = {}
+    failed_lock = threading.RLock()
+
+    def current_credentials() -> tuple[str, str]:
+        return (
+            str(service.settings.get("web_username", "") or "").strip(),
+            str(service.settings.get("web_password_hash", "") or "").strip(),
+        )
+
+    def current_fingerprint() -> str:
+        username, password_hash = current_credentials()
+        return _web_auth_fingerprint(username, password_hash)
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"UDMWeb/{APP_VERSION}"
 
@@ -365,12 +436,20 @@ def make_handler(
                 "form-action 'self'",
             )
 
-        def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
+        def _send_json(
+            self,
+            payload: dict[str, Any],
+            status: int = 200,
+            extra_headers: list[tuple[str, str]] | None = None,
+        ) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            if extra_headers:
+                for name, value in extra_headers:
+                    self.send_header(name, value)
             self._common_headers()
             self.end_headers()
             self.wfile.write(body)
@@ -389,22 +468,25 @@ def make_handler(
             self.send_header("Content-Length", str(len(data)))
             self.send_header(
                 "Cache-Control",
-                "no-cache" if path.suffix == ".html" else "public, max-age=300",
+                "no-store" if path.suffix == ".html" else "public, max-age=300",
             )
             self._common_headers()
             self.end_headers()
             self.wfile.write(data)
 
-        def _api_allowed(self) -> bool:
-            # A custom header prevents ordinary cross-site HTML forms from
-            # controlling UDM. This is CSRF protection, not user authentication.
+        def _redirect(self, location: str) -> None:
+            self.send_response(303)
+            self.send_header("Location", location)
+            self.send_header("Cache-Control", "no-store")
+            self._common_headers()
+            self.end_headers()
+
+        def _same_origin_allowed(self) -> bool:
             if self.headers.get("X-UDM-Web", "") != "1":
                 return False
-
             fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
             if fetch_site and fetch_site not in {"same-origin", "none"}:
                 return False
-
             origin = self.headers.get("Origin", "").strip()
             host = self.headers.get("Host", "").strip()
             if origin and host:
@@ -414,6 +496,73 @@ def make_handler(
                 except Exception:
                     return False
             return True
+
+        def _cookie_session_token(self) -> str:
+            raw_cookie = self.headers.get("Cookie", "")
+            if not raw_cookie:
+                return ""
+            try:
+                cookie = SimpleCookie()
+                cookie.load(raw_cookie)
+                morsel = cookie.get("udm_session")
+                return str(morsel.value if morsel is not None else "")
+            except Exception:
+                return ""
+
+        def _authenticated(self, *, touch: bool = True) -> bool:
+            token = self._cookie_session_token()
+            if not token:
+                return False
+            now = time.monotonic()
+            fingerprint = current_fingerprint()
+            with sessions_lock:
+                session = sessions.get(token)
+                if not session:
+                    return False
+                if (
+                    str(session.get("fingerprint", "")) != fingerprint
+                    or now - float(session.get("last_seen", 0.0)) > WEB_SESSION_TTL_SECONDS
+                ):
+                    sessions.pop(token, None)
+                    return False
+                if touch:
+                    session["last_seen"] = now
+                return True
+
+        def _api_allowed(self) -> tuple[bool, int]:
+            if not self._same_origin_allowed():
+                return False, 403
+            if not self._authenticated():
+                return False, 401
+            return True, 200
+
+        def _client_key(self) -> str:
+            try:
+                return str(self.client_address[0])
+            except Exception:
+                return "unknown"
+
+        def _login_rate_limited(self) -> bool:
+            now = time.monotonic()
+            cutoff = now - WEB_LOGIN_WINDOW_SECONDS
+            key = self._client_key()
+            with failed_lock:
+                values = [v for v in failed_logins.get(key, []) if v >= cutoff]
+                failed_logins[key] = values
+                return len(values) >= WEB_LOGIN_MAX_FAILURES
+
+        def _record_login_failure(self) -> None:
+            now = time.monotonic()
+            cutoff = now - WEB_LOGIN_WINDOW_SECONDS
+            key = self._client_key()
+            with failed_lock:
+                values = [v for v in failed_logins.get(key, []) if v >= cutoff]
+                values.append(now)
+                failed_logins[key] = values
+
+        def _clear_login_failures(self) -> None:
+            with failed_lock:
+                failed_logins.pop(self._client_key(), None)
 
         def _body_json(self) -> dict[str, Any]:
             try:
@@ -439,16 +588,32 @@ def make_handler(
             route = parts.path
 
             if route in {"/", "/index.html"}:
-                self._send_file(static_dir / "index.html")
+                self._send_file(static_dir / "login.html")
                 return
-            if route in {"/app.js", "/style.css"}:
+
+            if route in {"/login.js", "/login.css", "/app.js", "/style.css"}:
                 self._send_file(static_dir / route.lstrip("/"))
                 return
 
-            if route.startswith("/api/"):
-                if not self._api_allowed():
-                    self._send_json({"ok": False, "error": "Forbidden"}, status=403)
+            if route in {"/app", "/app/"}:
+                if not self._authenticated():
+                    self._redirect("/")
                     return
+                self._send_file(static_dir / "index.html")
+                return
+
+            if route.startswith("/api/"):
+                allowed, status = self._api_allowed()
+                if not allowed:
+                    self._send_json(
+                        {
+                            "ok": False,
+                            "error": "Authentication required" if status == 401 else "Forbidden",
+                        },
+                        status=status,
+                    )
+                    return
+
                 if route == "/api/downloads":
                     category = (query.get("category") or ["All Downloads"])[0]
                     search = (query.get("search") or [""])[0]
@@ -461,8 +626,16 @@ def make_handler(
                         }
                     )
                     return
+
                 if route == "/api/status":
-                    self._send_json({"ok": True, **service.engine_status()})
+                    username, _password_hash = current_credentials()
+                    self._send_json(
+                        {
+                            "ok": True,
+                            **service.engine_status(),
+                            "web_user": username,
+                        }
+                    )
                     return
 
             self._send_json({"ok": False, "error": "Not found"}, status=404)
@@ -471,11 +644,97 @@ def make_handler(
             parts = urlsplit(self.path)
             route = parts.path
 
+            if route == "/auth/login":
+                if not self._same_origin_allowed():
+                    self._send_json({"ok": False, "error": "Forbidden"}, status=403)
+                    return
+                if self._login_rate_limited():
+                    self._send_json(
+                        {"ok": False, "error": "Too many failed sign-in attempts. Try again shortly."},
+                        status=429,
+                    )
+                    return
+                try:
+                    payload = self._body_json()
+                except ValueError as exc:
+                    self._send_json({"ok": False, "error": str(exc)}, status=400)
+                    return
+
+                supplied_user = str(payload.get("username") or "").strip()
+                supplied_password = str(payload.get("password") or "")
+                username, password_hash = current_credentials()
+
+                if not username or not password_hash:
+                    self._send_json(
+                        {"ok": False, "error": "Web UI credentials are not configured in UDM Options."},
+                        status=503,
+                    )
+                    return
+
+                user_ok = hmac.compare_digest(
+                    supplied_user.encode("utf-8"),
+                    username.encode("utf-8"),
+                )
+                password_ok = verify_web_password(supplied_password, password_hash)
+                if not (user_ok and password_ok):
+                    self._record_login_failure()
+                    self._send_json(
+                        {"ok": False, "error": "Invalid username or password"},
+                        status=401,
+                    )
+                    return
+
+                self._clear_login_failures()
+                token = secrets.token_urlsafe(32)
+                with sessions_lock:
+                    sessions[token] = {
+                        "fingerprint": current_fingerprint(),
+                        "last_seen": time.monotonic(),
+                    }
+
+                self._send_json(
+                    {"ok": True, "redirect": "/app"},
+                    extra_headers=[
+                        (
+                            "Set-Cookie",
+                            "udm_session=" + token + "; Path=/; HttpOnly; SameSite=Strict",
+                        )
+                    ],
+                )
+                return
+
+            if route == "/auth/logout":
+                if not self._same_origin_allowed():
+                    self._send_json({"ok": False, "error": "Forbidden"}, status=403)
+                    return
+                token = self._cookie_session_token()
+                if token:
+                    with sessions_lock:
+                        sessions.pop(token, None)
+                self._send_json(
+                    {"ok": True},
+                    extra_headers=[
+                        (
+                            "Set-Cookie",
+                            "udm_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0",
+                        )
+                    ],
+                )
+                return
+
             if not route.startswith("/api/"):
                 self._send_json({"ok": False, "error": "Not found"}, status=404)
                 return
-            if not self._api_allowed():
-                self._send_json({"ok": False, "error": "Forbidden"}, status=403)
+
+            allowed, status = self._api_allowed()
+            if not allowed:
+                self._send_json(
+                    {
+                        "ok": False,
+                        "error": "Authentication required" if status == 401 else "Forbidden",
+                    },
+                    status=status,
+                )
                 return
 
             try:
@@ -603,10 +862,16 @@ class WebUIServer:
 
 def _self_test() -> int:
     static_dir = _find_static_dir()
-    required = ["index.html", "app.js", "style.css"]
+    required = [
+        "index.html", "app.js", "style.css",
+        "login.html", "login.js", "login.css",
+    ]
     missing = [name for name in required if not (static_dir / name).is_file()]
     if missing:
         raise RuntimeError("Missing Web UI files: " + ", ".join(missing))
+    encoded = hash_web_password("TestPassword123!")
+    assert verify_web_password("TestPassword123!", encoded)
+    assert not verify_web_password("WrongPassword", encoded)
     print("UDM Web UI self-test: OK")
     return 0
 

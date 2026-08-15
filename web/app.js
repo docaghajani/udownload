@@ -32,6 +32,7 @@
     downloadList: document.getElementById('downloadList'),
     emptyState: document.getElementById('emptyState'),
     toast: document.getElementById('toast'),
+    logoutBtn: document.getElementById('logoutBtn'),
   };
 
   async function api(path, options = {}) {
@@ -45,6 +46,11 @@
       credentials: 'same-origin',
       cache: 'no-store',
     });
+
+    if (response.status === 401) {
+      location.replace('/');
+      throw new Error('Authentication required');
+    }
 
     let data;
     try {
@@ -326,6 +332,19 @@
   el.clearCompletedBtn.addEventListener('click', () => runAction(
     () => api('/api/clear-completed', { method: 'POST' }),
   ));
+
+  el.logoutBtn.addEventListener('click', async () => {
+    try {
+      await fetch('/auth/logout', {
+        method: 'POST',
+        headers: { 'X-UDM-Web': '1' },
+        credentials: 'same-origin',
+        cache: 'no-store',
+      });
+    } finally {
+      location.replace('/');
+    }
+  });
 
   renderTabs();
   refresh();

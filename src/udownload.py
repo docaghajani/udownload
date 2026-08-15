@@ -7,6 +7,7 @@ import base64
 import contextlib
 import datetime as dt
 import getpass
+import hmac
 import json
 import mimetypes
 import os
@@ -48,7 +49,7 @@ from core import (
 )
 
 
-from web_server import WebUIServer
+from web_server import WebUIServer, hash_web_password
 
 
 STATUS_LABELS = {
@@ -770,7 +771,7 @@ class ConfirmDialog(Gtk.Dialog):
 class OptionsDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window, settings: Settings, on_save):
         super().__init__(title="Options", transient_for=parent, modal=True)
-        self.set_default_size(560, 500)
+        self.set_default_size(600, 620)
         self.settings = settings
         self.on_save = on_save
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
@@ -830,6 +831,37 @@ class OptionsDialog(Gtk.Dialog):
         )
         self.web_port.set_sensitive(self.web_enabled.get_active())
 
+        self.web_username = Gtk.Entry(hexpand=True)
+        self.web_username.set_text(
+            str(settings.get("web_username", "") or "")
+        )
+        self.web_username.set_max_length(64)
+
+        self.web_password_hash = str(
+            settings.get("web_password_hash", "") or ""
+        )
+        self.web_password = Gtk.Entry(hexpand=True)
+        self.web_password.set_visibility(False)
+        self.web_password.set_input_purpose(Gtk.InputPurpose.PASSWORD)
+        self.web_password.set_tooltip_text(
+            "Leave blank to keep the current password. "
+            "Enter a new password to replace it."
+        )
+
+        self.web_auth_note = Gtk.Label(
+            label=(
+                "Password is stored only as a salted PBKDF2 hash. "
+                "Leave the password field empty to keep the existing password."
+            ),
+            xalign=0,
+            wrap=True,
+        )
+        self.web_auth_note.add_css_class("dim-label")
+
+        self.web_error = Gtk.Label(xalign=0, wrap=True)
+        self.web_error.add_css_class("error")
+        self.web_error.set_visible(False)
+
         def web_enabled_changed(*_args) -> None:
             self.web_port.set_sensitive(self.web_enabled.get_active())
 
@@ -844,14 +876,51 @@ class OptionsDialog(Gtk.Dialog):
             ("Show download-complete dialog", self.complete_dialog_box),
             ("Enable Web UI (trusted LAN / VPN)", self.web_enabled_box),
             ("Web UI port", self.web_port),
+            ("Web UI username", self.web_username),
+            ("Web UI password", self.web_password),
         ]
         for idx, (label, widget) in enumerate(rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, idx, 1, 1)
             grid.attach(widget, 1, idx, 1, 1)
+        note_row = len(rows)
+        grid.attach(self.web_auth_note, 0, note_row, 2, 1)
+        grid.attach(self.web_error, 0, note_row + 1, 2, 1)
         self.connect("response", self._response)
 
     def _response(self, _dialog, response: int) -> None:
         if response == Gtk.ResponseType.OK:
+            username = self.web_username.get_text().strip()
+            password = self.web_password.get_text()
+
+            self.web_error.set_visible(False)
+            if password and len(password) < 8:
+                self.web_error.set_text(
+                    "Web UI password must be at least 8 characters."
+                )
+                self.web_error.set_visible(True)
+                return
+
+            if password and not username:
+                self.web_error.set_text(
+                    "Enter a Web UI username before setting a password."
+                )
+                self.web_error.set_visible(True)
+                return
+
+            if self.web_enabled.get_active():
+                if not username:
+                    self.web_error.set_text(
+                        "A Web UI username is required before enabling Web UI."
+                    )
+                    self.web_error.set_visible(True)
+                    return
+                if not password and not self.web_password_hash:
+                    self.web_error.set_text(
+                        "Set a Web UI password before enabling Web UI."
+                    )
+                    self.web_error.set_visible(True)
+                    return
+
             values = {
                 "download_dir": self.dir_entry.get_text().strip(),
                 "max_concurrent": int(self.concurrent.get_value()),
@@ -861,7 +930,10 @@ class OptionsDialog(Gtk.Dialog):
                 "show_download_complete_dialog": self.complete_dialog.get_active(),
                 "web_enabled": self.web_enabled.get_active(),
                 "web_port": int(self.web_port.get_value()),
+                "web_username": username,
             }
+            if password:
+                values["web_password"] = password
             self.on_save(values)
         self.destroy()
 
@@ -2421,7 +2493,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.settings = Settings(self.db)
         self.aria = Aria2Client()
         self.web_server: WebUIServer | None = None
-        self._web_settings_snapshot: tuple[bool, int] | None = None
+        self._web_settings_snapshot: tuple[bool, int, str, str] | None = None
         self.current_category = str(self.settings.get("current_category", "All Downloads"))
         self.search_text = ""
         self.refresh_busy = False
@@ -3909,6 +3981,10 @@ class MainWindow(Gtk.ApplicationWindow):
         OptionsDialog(self, self.settings, self.save_options).present()
 
     def save_options(self, values: dict[str, Any]) -> None:
+        password = str(values.pop("web_password", "") or "")
+        if password:
+            values["web_password_hash"] = hash_web_password(password)
+
         for key, value in values.items():
             self.settings.set(key, value)
         with contextlib.suppress(Exception):
@@ -3930,7 +4006,11 @@ class MainWindow(Gtk.ApplicationWindow):
         except (TypeError, ValueError):
             port = 8600
 
-        state = (enabled, port)
+        username = str(self.settings.get("web_username", "") or "").strip()
+        password_hash = str(
+            self.settings.get("web_password_hash", "") or ""
+        ).strip()
+        state = (enabled, port, username, password_hash)
         if state != self._web_settings_snapshot:
             self._sync_web_server()
         return GLib.SOURCE_CONTINUE
@@ -3946,13 +4026,29 @@ class MainWindow(Gtk.ApplicationWindow):
             port = 8600
             self.settings.set("web_port", port)
 
-        self._web_settings_snapshot = (enabled, port)
+        username = str(self.settings.get("web_username", "") or "").strip()
+        password_hash = str(
+            self.settings.get("web_password_hash", "") or ""
+        ).strip()
+        self._web_settings_snapshot = (
+            enabled,
+            port,
+            username,
+            password_hash,
+        )
 
         if not enabled:
             was_running = self.web_server is not None
             self._stop_web_server()
             if was_running:
                 self.status_label.set_text("Web UI disabled")
+            return GLib.SOURCE_REMOVE
+
+        if not username or not password_hash:
+            self._stop_web_server()
+            self.status_label.set_text(
+                "Web UI needs a username and password in Options"
+            )
             return GLib.SOURCE_REMOVE
 
         if (
@@ -4314,7 +4410,11 @@ def _cli_remote(
 
 
 
-def _cli_web(action: str, port: int | None = None) -> int:
+def _cli_web(
+    action: str,
+    port: int | None = None,
+    username: str | None = None,
+) -> int:
     db = Database()
     try:
         settings = Settings(db)
@@ -4324,15 +4424,68 @@ def _cli_web(action: str, port: int | None = None) -> int:
         except (TypeError, ValueError):
             current_port = 8600
 
+        current_user = str(
+            settings.get("web_username", "") or ""
+        ).strip()
+        current_hash = str(
+            settings.get("web_password_hash", "") or ""
+        ).strip()
+
         if action == "status":
             enabled = bool(settings.get("web_enabled", False))
             print(f"Web UI: {'enabled' if enabled else 'disabled'}")
             print(f"Port: {current_port}")
+            print(f"Username: {current_user or '(not configured)'}")
+            print(
+                "Authentication: "
+                + ("configured" if current_user and current_hash else "not configured")
+            )
             if enabled:
                 print(f"URL: http://SERVER_IP:{current_port}/")
             return 0
 
+        if action == "auth":
+            new_user = str(username or "").strip()
+            if not new_user:
+                print("--user is required", file=sys.stderr)
+                return 2
+            if len(new_user) > 64:
+                print("--user must be 64 characters or fewer", file=sys.stderr)
+                return 2
+
+            password = getpass.getpass("Web UI password: ")
+            if len(password) < 8:
+                print(
+                    "Web UI password must be at least 8 characters",
+                    file=sys.stderr,
+                )
+                return 2
+            confirmation = getpass.getpass("Confirm Web UI password: ")
+            if not hmac.compare_digest(password, confirmation):
+                print("Passwords do not match", file=sys.stderr)
+                return 2
+
+            settings.set("web_username", new_user)
+            settings.set("web_password_hash", hash_web_password(password))
+            print(f"Web UI credentials updated for user: {new_user}")
+            print("Password was stored as a salted hash, not plaintext.")
+            return 0
+
         if action == "enable":
+            current_user = str(
+                settings.get("web_username", "") or ""
+            ).strip()
+            current_hash = str(
+                settings.get("web_password_hash", "") or ""
+            ).strip()
+            if not current_user or not current_hash:
+                print(
+                    "Web UI authentication is not configured. "
+                    "Run: udownload web auth --user USER",
+                    file=sys.stderr,
+                )
+                return 2
+
             if port is not None:
                 if not 1024 <= int(port) <= 65535:
                     print(
@@ -4346,6 +4499,7 @@ def _cli_web(action: str, port: int | None = None) -> int:
             settings.set("web_enabled", True)
             print("Web UI enabled")
             print(f"Port: {current_port}")
+            print(f"Username: {current_user}")
             print(f"URL: http://SERVER_IP:{current_port}/")
             print(
                 "If UDM is running, the change is applied within a few seconds; "
@@ -4455,6 +4609,15 @@ def _handle_headless_cli(argv: list[str]) -> int | None:
         "status",
         help="Show the saved Web UI state and port",
     )
+    web_auth = web_commands.add_parser(
+        "auth",
+        help="Configure the Web UI username and password",
+    )
+    web_auth.add_argument(
+        "--user",
+        required=True,
+        help="Web UI username; password is prompted securely",
+    )
 
     args = parser.parse_args(argv[1:])
     try:
@@ -4462,6 +4625,7 @@ def _handle_headless_cli(argv: list[str]) -> int | None:
             return _cli_web(
                 action=args.web_action,
                 port=getattr(args, "port", None),
+                username=getattr(args, "user", None),
             )
 
         url = _cli_url(args.url, args.link)

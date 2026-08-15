@@ -23,7 +23,7 @@ from typing import Any, Iterable
 
 APP_ID = "com.ideveloper.UDownload"
 APP_NAME = "Ubuntu Download Manager"
-APP_VERSION = "1.0.19"
+APP_VERSION = "1.2.0"
 CONFIG_DIR = Path.home() / ".config" / "udownload"
 DATA_DIR = Path.home() / ".local" / "share" / "udownload"
 LEGACY_CONFIG_DIR = Path.home() / ".config" / "udm"
@@ -396,6 +396,8 @@ class Settings:
         "browser_prompt": True,
         "web_enabled": False,
         "web_port": 8600,
+        "web_username": "",
+        "web_password_hash": "",
         "remote_server": "",
         "remote_port": 8347,
         "remote_user": "",
