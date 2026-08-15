@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <strong>Fast transfers · Native Linux UX · Browser integration · Remote control · CLI</strong>
+  <strong>Fast transfers · Native Linux UX · Web UI · Browser integration · Remote control · CLI</strong>
 </p>
 
 <p align="center">
@@ -20,6 +20,7 @@
   <a href="#-highlights">Highlights</a> •
   <a href="#-command-line">Command Line</a> •
   <a href="#-remote-downloads">Remote</a> •
+  <a href="#-web-ui">Web UI</a> •
   <a href="#-browser-integration">Browser Integration</a> •
   <a href="#-architecture">Architecture</a> •
   <a href="#-packaging-status">Packaging</a> •
@@ -198,18 +199,18 @@ udownload --version
 > Available Ubuntu series and current PPA builds are listed on
 > [Launchpad](https://launchpad.net/~iaghajani/+archive/ubuntu/udownload).
 
-### UDM 1.0.18 from GitHub
+### UDM 1.0.19 from GitHub
 
 ```bash
 cd ~
 
 git clone \
-  --branch v1.0.18 \
+  --branch v1.0.19 \
   --depth 1 \
   https://github.com/docaghajani/udownload.git \
-  udownload-1.0.18
+  udownload-1.0.19
 
-cd ~/udownload-1.0.18
+cd ~/udownload-1.0.19
 
 python3 -m py_compile \
   src/core.py \
@@ -221,11 +222,11 @@ python3 src/udownload.py --self-test
 python3 src/udownload.py --version
 ```
 
-To temporarily make this RC the `udownload` command while keeping the distro
+To temporarily make this release the `udownload` command while keeping the distro
 package installed:
 
 ```bash
-TESTDIR="$HOME/udownload-1.0.18"
+TESTDIR="$HOME/udownload-1.0.19"
 
 printf '#!/bin/sh\nexec /usr/bin/python3 "%s/src/udownload.py" "$@"\n' "$TESTDIR" \
   | sudo tee /usr/local/bin/udownload >/dev/null
@@ -285,7 +286,7 @@ the command fails instead of creating a generic `download` entry.
 
 ## 🌍 Remote Downloads
 
-UDM 1.0.18 adds SSH-based Remote control. A download can be sent to a UDM machine
+UDM 1.0.18 added SSH-based Remote control. A download can be sent to a UDM machine
 from another computer while the actual transfer runs on the remote machine.
 
 ### 1. Configure the UDM machine
@@ -402,6 +403,36 @@ Full setup and security details:
 
 ---
 
+
+## 🖥️ Web UI
+
+UDM 1.0.19 can expose the current UDM download queue through a browser on a
+trusted LAN or VPN.
+
+Enable it from:
+
+```text
+UDM → Options → Enable Web UI (trusted LAN / VPN)
+```
+
+Choose the Web UI port (default `8600`), save, and open:
+
+```text
+http://SERVER_IP:8600/
+```
+
+The browser view uses the same UDM database and aria2 engine as the desktop app.
+It can add, queue and schedule downloads, show live progress, and pause, resume,
+start or remove queue entries.
+
+> **Security:** the 1.0.19 Web UI is for trusted LAN/VPN use. Do not forward its
+> port directly to the public Internet; this release does not include a
+> public-facing login screen.
+
+**[Read the Web UI Guide →](docs/WEB_UI.md)**
+
+---
+
 ## 🌐 Browser Integration
 
 UDM can receive download requests directly from supported browsers through
@@ -485,7 +516,7 @@ predictable during real-world use.
 
 | Target | Status |
 |---|---|
-| GitHub release | 🟢 `v1.0.18` |
+| GitHub release | 🟢 `v1.0.19` |
 | Ubuntu PPA | 🟢 Available |
 | Ubuntu 24.04 LTS (Noble) | 🟢 PPA build available |
 | Ubuntu development series | 🟢 PPA build available |

@@ -48,6 +48,9 @@ from core import (
 )
 
 
+from web_server import WebUIServer
+
+
 STATUS_LABELS = {
     "active": "Downloading",
     "waiting": "Queued",
@@ -767,7 +770,7 @@ class ConfirmDialog(Gtk.Dialog):
 class OptionsDialog(Gtk.Dialog):
     def __init__(self, parent: Gtk.Window, settings: Settings, on_save):
         super().__init__(title="Options", transient_for=parent, modal=True)
-        self.set_default_size(560, 420)
+        self.set_default_size(560, 500)
         self.settings = settings
         self.on_save = on_save
         self.add_button("Cancel", Gtk.ResponseType.CANCEL)
@@ -808,6 +811,30 @@ class OptionsDialog(Gtk.Dialog):
         self.complete_dialog_box.set_halign(Gtk.Align.START)
         self.complete_dialog_box.append(self.complete_dialog)
 
+        self.web_enabled = Gtk.Switch(
+            active=bool(settings.get("web_enabled", False))
+        )
+        self.web_enabled.set_halign(Gtk.Align.START)
+        self.web_enabled.set_valign(Gtk.Align.CENTER)
+        self.web_enabled_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.web_enabled_box.set_halign(Gtk.Align.START)
+        self.web_enabled_box.append(self.web_enabled)
+
+        self.web_port = Gtk.SpinButton.new_with_range(1024, 65535, 1)
+        self.web_port.set_value(
+            int(settings.get("web_port", 8600) or 8600)
+        )
+        self.web_port.set_tooltip_text(
+            "The Web UI listens on all network interfaces. "
+            "Use it only on a trusted LAN or VPN."
+        )
+        self.web_port.set_sensitive(self.web_enabled.get_active())
+
+        def web_enabled_changed(*_args) -> None:
+            self.web_port.set_sensitive(self.web_enabled.get_active())
+
+        self.web_enabled.connect("notify::active", web_enabled_changed)
+
         rows = [
             ("Default download folder", self.dir_box),
             ("Simultaneous downloads", self.concurrent),
@@ -815,6 +842,8 @@ class OptionsDialog(Gtk.Dialog):
             ("Global speed limit (e.g. 2M, 0=unlimited)", self.speed),
             ("Show file-info dialog for browser downloads", self.prompt_box),
             ("Show download-complete dialog", self.complete_dialog_box),
+            ("Enable Web UI (trusted LAN / VPN)", self.web_enabled_box),
+            ("Web UI port", self.web_port),
         ]
         for idx, (label, widget) in enumerate(rows):
             grid.attach(Gtk.Label(label=label, xalign=0), 0, idx, 1, 1)
@@ -830,6 +859,8 @@ class OptionsDialog(Gtk.Dialog):
                 "speed_limit": self.speed.get_text().strip() or "0",
                 "browser_prompt": self.prompt.get_active(),
                 "show_download_complete_dialog": self.complete_dialog.get_active(),
+                "web_enabled": self.web_enabled.get_active(),
+                "web_port": int(self.web_port.get_value()),
             }
             self.on_save(values)
         self.destroy()
@@ -2389,6 +2420,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.db = Database()
         self.settings = Settings(self.db)
         self.aria = Aria2Client()
+        self.web_server: WebUIServer | None = None
         self.current_category = str(self.settings.get("current_category", "All Downloads"))
         self.search_text = ""
         self.refresh_busy = False
@@ -2404,6 +2436,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self._build_ui()
         self.connect("close-request", self._on_close)
         GLib.idle_add(self._start_engine)
+        GLib.idle_add(self._sync_web_server)
         GLib.timeout_add_seconds(1, self.refresh)
         GLib.timeout_add_seconds(20, self.run_scheduler)
 
@@ -2756,6 +2789,7 @@ class MainWindow(Gtk.ApplicationWindow):
         if hasattr(self, "columns_by_key"):
             self._save_column_widths()
         self.settings.set("current_category", self.current_category)
+        self._stop_web_server()
         return False
 
     def _on_search(self, entry: Gtk.SearchEntry) -> None:
@@ -3878,6 +3912,56 @@ class MainWindow(Gtk.ApplicationWindow):
         with contextlib.suppress(Exception):
             self.aria.set_global_options(self.settings)
         self.status_label.set_text("Options saved")
+        self._sync_web_server()
+
+    def _stop_web_server(self) -> None:
+        server = self.web_server
+        self.web_server = None
+        if server is not None:
+            with contextlib.suppress(Exception):
+                server.stop()
+
+    def _sync_web_server(self) -> bool:
+        enabled = bool(self.settings.get("web_enabled", False))
+        try:
+            port = int(self.settings.get("web_port", 8600) or 8600)
+        except (TypeError, ValueError):
+            port = 8600
+
+        if not 1024 <= port <= 65535:
+            port = 8600
+            self.settings.set("web_port", port)
+
+        if not enabled:
+            was_running = self.web_server is not None
+            self._stop_web_server()
+            if was_running:
+                self.status_label.set_text("Web UI disabled")
+            return GLib.SOURCE_REMOVE
+
+        if (
+            self.web_server is not None
+            and self.web_server.running
+            and self.web_server.port == port
+        ):
+            self.status_label.set_text(
+                f"Web UI active: {self.web_server.url}"
+            )
+            return GLib.SOURCE_REMOVE
+
+        self._stop_web_server()
+        server = WebUIServer(port=port)
+        try:
+            url = server.start()
+        except Exception as exc:
+            self.status_label.set_text(
+                f"Could not start Web UI on port {port}: {exc}"
+            )
+            return GLib.SOURCE_REMOVE
+
+        self.web_server = server
+        self.status_label.set_text(f"Web UI active: {url}")
+        return GLib.SOURCE_REMOVE
 
     def show_scheduled(self) -> None:
         SchedulerDialog(self).present()
