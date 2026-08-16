@@ -72,6 +72,19 @@ Disable:
 udownload web disable
 ```
 
+## SQLite request threading — 1.2.1
+
+UDM 1.2.1 routes Web UI authentication-setting reads through the same
+`WebDownloadService` lock used by normal Web UI database operations.
+
+This fixes the intermittent:
+
+```text
+sqlite3.InterfaceError: bad parameter or other API misuse
+```
+
+seen under concurrent authenticated HTTP requests.
+
 ## Security notes
 
 - Use a strong password of at least 8 characters.

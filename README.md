@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/docaghajani/udownload/releases/latest"><img src="https://img.shields.io/badge/release-v1.2.0-2ea44f?style=flat-square&logo=github" alt="Latest release"></a>
+  <a href="https://github.com/docaghajani/udownload/releases/latest"><img src="https://img.shields.io/badge/release-v1.2.1-2ea44f?style=flat-square&logo=github" alt="Latest release"></a>
   <a href="COPYING"><img src="https://img.shields.io/github/license/docaghajani/udownload?style=flat-square" alt="License"></a>
   <a href="https://launchpad.net/~iaghajani/+archive/ubuntu/udownload"><img src="https://img.shields.io/badge/Ubuntu-PPA-E95420?style=flat-square&logo=ubuntu&logoColor=white" alt="Ubuntu PPA"></a>
   <img src="https://img.shields.io/badge/GTK-4-4A86CF?style=flat-square&logo=gnome&logoColor=white" alt="GTK4">
@@ -16,6 +16,7 @@
 </p>
 
 <p align="center">
+  <a href="#-udm-121">UDM 1.2.1</a> •
   <a href="#-udm-120">UDM 1.2.0</a> •
   <a href="#-udm-1019">UDM 1.0.19</a> •
   <a href="#-quick-start">Quick Start</a> •
@@ -28,6 +29,24 @@
   <a href="#-packaging-status">Packaging</a> •
   <a href="#-contributing">Contributing</a>
 </p>
+
+---
+
+## 🛠 UDM 1.2.1
+
+UDM 1.2.1 fixes an intermittent SQLite concurrency error in the authenticated
+Web UI.
+
+In 1.2.0, authentication-setting reads could occur from HTTP request threads
+outside the same lock used by normal Web UI database operations. Under
+concurrent requests this could produce:
+
+```text
+sqlite3.InterfaceError: bad parameter or other API misuse
+```
+
+1.2.1 routes those reads through the existing `WebDownloadService` re-entrant
+lock and adds a 480-request authenticated concurrency stress test.
 
 ---
 
@@ -259,18 +278,18 @@ udownload --version
 > Available Ubuntu series and current PPA builds are listed on
 > [Launchpad](https://launchpad.net/~iaghajani/+archive/ubuntu/udownload).
 
-### UDM 1.2.0 from GitHub
+### UDM 1.2.1 from GitHub
 
 ```bash
 cd ~
 
 git clone \
-  --branch v1.2.0 \
+  --branch v1.2.1 \
   --depth 1 \
   https://github.com/docaghajani/udownload.git \
-  udownload-1.2.0
+  udownload-1.2.1
 
-cd ~/udownload-1.2.0
+cd ~/udownload-1.2.1
 
 python3 -m py_compile \
   src/core.py \
@@ -288,7 +307,7 @@ To temporarily make this release the `udownload` command while keeping the distr
 package installed:
 
 ```bash
-TESTDIR="$HOME/udownload-1.2.0"
+TESTDIR="$HOME/udownload-1.2.1"
 
 printf '#!/bin/sh\nexec /usr/bin/python3 "%s/src/udownload.py" "$@"\n' "$TESTDIR" \
   | sudo tee /usr/local/bin/udownload >/dev/null
@@ -591,7 +610,7 @@ predictable during real-world use.
 
 | Target | Status |
 |---|---|
-| GitHub release | 🟢 `v1.2.0` |
+| GitHub release | 🟢 `v1.2.1` |
 | Ubuntu PPA | 🟢 Available |
 | Ubuntu 24.04 LTS (Noble) | 🟢 PPA build available |
 | Ubuntu development series | 🟢 PPA build available |

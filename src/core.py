@@ -23,7 +23,7 @@ from typing import Any, Iterable
 
 APP_ID = "com.ideveloper.UDownload"
 APP_NAME = "Ubuntu Download Manager"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 CONFIG_DIR = Path.home() / ".config" / "udownload"
 DATA_DIR = Path.home() / ".local" / "share" / "udownload"
 LEGACY_CONFIG_DIR = Path.home() / ".config" / "udm"

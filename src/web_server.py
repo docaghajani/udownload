@@ -192,6 +192,15 @@ class WebDownloadService:
             with contextlib.suppress(Exception):
                 self.db.conn.close()
 
+    def web_credentials(self) -> tuple[str, str]:
+        # Read Web authentication settings under the same lock used for all
+        # other Web UI access to the service-owned SQLite connection.
+        with self.lock:
+            return (
+                str(self.settings.get("web_username", "") or "").strip(),
+                str(self.settings.get("web_password_hash", "") or "").strip(),
+            )
+
     def list_downloads(self, category: str, search: str) -> list[dict[str, Any]]:
         with self.lock:
             rows = self.db.rows(category=category, search=search)
@@ -405,10 +414,9 @@ def make_handler(
     failed_lock = threading.RLock()
 
     def current_credentials() -> tuple[str, str]:
-        return (
-            str(service.settings.get("web_username", "") or "").strip(),
-            str(service.settings.get("web_password_hash", "") or "").strip(),
-        )
+        # ThreadingHTTPServer handles requests concurrently. Do not touch the
+        # service-owned SQLite connection outside WebDownloadService.lock.
+        return service.web_credentials()
 
     def current_fingerprint() -> str:
         username, password_hash = current_credentials()

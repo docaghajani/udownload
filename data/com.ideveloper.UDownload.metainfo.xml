@@ -31,6 +31,11 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.2.1" date="2026-08-16">
+      <description>
+        <p>Fix concurrent Web UI authentication reads so HTTP request threads no longer access the service-owned SQLite connection outside its synchronization lock.</p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-08-15">
       <description>
         <p>Add password-protected Web UI sessions, configurable Web credentials, secure password hashing, login rate limiting, logout, session expiry, and CLI credential management.</p>
